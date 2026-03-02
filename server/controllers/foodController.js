@@ -32,16 +32,50 @@ exports.createFood = async (req, res) => {
         );
 
         const food = await Food.create({
-            restaurant: req.user._id,
-            foodType,
-            quantity,
-            cookedTime,
-            storageType,
-            freshnessScore,
-            predictedExpiry
-        });
+        restaurant: req.user._id,
+        foodType,
+        quantity,
+        cookedTime,
+        storageType,
+        freshnessScore,
+        predictedExpiry,
+        location: req.user.location
+    });
 
         res.status(201).json(food);
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+exports.getNearbyFood = async (req, res) => {
+    try {
+        if (req.user.role !== "ngo") {
+            return res.status(403).json({ message: "Only NGOs can view nearby food" });
+        }
+
+        if (!req.user.location || !req.user.location.coordinates) {
+            return res.status(400).json({ message: "NGO location not set properly" });
+        }
+
+        const [longitude, latitude] = req.user.location.coordinates;
+
+        const food = await Food.find({
+            status: "active",
+            predictedExpiry: { $gt: new Date() }
+        }).find({
+            location: {
+                $near: {
+                    $geometry: {
+                        type: "Point",
+                        coordinates: [longitude, latitude]
+                    },
+                    $maxDistance: 10000
+                }
+            }
+        }).populate("restaurant", "name email");
+
+        res.json(food);
 
     } catch (error) {
         res.status(500).json({ error: error.message });

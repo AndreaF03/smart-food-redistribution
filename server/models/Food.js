@@ -33,7 +33,19 @@ const foodSchema = new mongoose.Schema({
         type: String,
         enum: ["active", "reserved", "picked", "delivered"],
         default: "active"
+    },
+    location: {
+        type: {
+            type: String,
+            enum: ["Point"],
+            default: "Point"
+        },
+        coordinates: {
+            type: [Number], // [longitude, latitude]
+        }
     }
 }, { timestamps: true });
+
+foodSchema.index({ location: "2dsphere" });
 
 module.exports = mongoose.model("Food", foodSchema);
