@@ -4,13 +4,23 @@ const cors = require("cors");
 require("dotenv").config();
 
 const authRoutes = require("./routes/authRoutes");
+const foodRoutes = require("./routes/foodRoutes");
+const { protect } = require("./middleware/authMiddleware");
 
-const app = express();   // ✅ MUST COME BEFORE app.use()
+const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-app.use("/api/auth", authRoutes);  // ✅ Now it's safe
+app.use("/api/auth", authRoutes);
+app.use("/api/food", foodRoutes);
+
+app.get("/api/protected", protect, (req, res) => {
+    res.json({
+        message: "Protected route working",
+        user: req.user
+    });
+});
 
 const PORT = process.env.PORT || 5000;
 
