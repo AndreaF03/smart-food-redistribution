@@ -209,3 +209,47 @@ exports.getRestaurantDashboard = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+exports.getAdminAnalytics = async (req, res) => {
+    try {
+        if (req.user.role !== "admin") {
+            return res.status(403).json({ message: "Only admins can access analytics" });
+        }
+
+        const totalListings = await Food.countDocuments();
+
+        const deliveredCount = await Food.countDocuments({ status: "delivered" });
+        const expiredCount = await Food.countDocuments({ status: "expired" });
+        const activeCount = await Food.countDocuments({ status: "active" });
+        const reservedCount = await Food.countDocuments({ status: "reserved" });
+
+        const totalQuantityRedistributed = await Food.aggregate([
+            { $match: { status: "delivered" } },
+            { $group: { _id: null, total: { $sum: "$quantity" } } }
+        ]);
+
+        const topRestaurants = await Food.aggregate([
+            { $match: { status: "delivered" } },
+            { 
+                $group: { 
+                    _id: "$restaurant", 
+                    totalDelivered: { $sum: "$quantity" } 
+                } 
+            },
+            { $sort: { totalDelivered: -1 } },
+            { $limit: 5 }
+        ]);
+
+        res.json({
+            totalListings,
+            deliveredCount,
+            expiredCount,
+            activeCount,
+            reservedCount,
+            totalQuantityRedistributed: totalQuantityRedistributed[0]?.total || 0,
+            topRestaurants
+        });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};

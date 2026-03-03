@@ -7,7 +7,8 @@ const {
   markPicked,
   markDelivered,
   getNGODashboard,
-  getRestaurantDashboard
+  getRestaurantDashboard,
+getAdminAnalytics
 } = require("../controllers/foodController");
 const { protect } = require("../middleware/authMiddleware");
 
@@ -18,4 +19,5 @@ router.put("/pick/:id", protect, markPicked);
 router.put("/deliver/:id", protect, markDelivered);
 router.get("/ngo/dashboard", protect, getNGODashboard);
 router.get("/restaurant/dashboard", protect, getRestaurantDashboard);
+router.get("/admin/analytics", protect, getAdminAnalytics);
 module.exports = router;
