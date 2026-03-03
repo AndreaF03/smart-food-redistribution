@@ -173,3 +173,21 @@ exports.markDelivered = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+exports.getNGODashboard = async (req, res) => {
+    try {
+        if (req.user.role !== "ngo") {
+            return res.status(403).json({ message: "Only NGOs can access dashboard" });
+        }
+
+        const food = await Food.find({
+            reservedBy: req.user._id
+        })
+        .populate("restaurant", "name email")
+        .sort({ createdAt: -1 });
+
+        res.json(food);
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};

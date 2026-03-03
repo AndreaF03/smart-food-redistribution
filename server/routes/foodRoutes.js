@@ -5,7 +5,8 @@ const {
   getNearbyFood, 
   reserveFood,
   markPicked,
-  markDelivered
+  markDelivered,
+  getNGODashboard
 } = require("../controllers/foodController");
 const { protect } = require("../middleware/authMiddleware");
 
@@ -14,4 +15,5 @@ router.get("/nearby", protect, getNearbyFood);
 router.put("/reserve/:id", protect, reserveFood);
 router.put("/pick/:id", protect, markPicked);
 router.put("/deliver/:id", protect, markDelivered);
+router.get("/ngo/dashboard", protect, getNGODashboard);
 module.exports = router;
