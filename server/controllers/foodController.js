@@ -191,3 +191,21 @@ exports.getNGODashboard = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+exports.getRestaurantDashboard = async (req, res) => {
+    try {
+        if (req.user.role !== "restaurant") {
+            return res.status(403).json({ message: "Only restaurants can access dashboard" });
+        }
+
+        const food = await Food.find({
+            restaurant: req.user._id
+        })
+        .populate("reservedBy", "name email")
+        .sort({ createdAt: -1 });
+
+        res.json(food);
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
