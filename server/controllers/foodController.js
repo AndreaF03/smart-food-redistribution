@@ -108,3 +108,55 @@ exports.reserveFood = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+exports.markPicked = async (req, res) => {
+    try {
+        const food = await Food.findById(req.params.id);
+
+        if (!food) {
+            return res.status(404).json({ message: "Food not found" });
+        }
+
+        if (food.status !== "reserved") {
+            return res.status(400).json({ message: "Food must be reserved first" });
+        }
+
+        // Only restaurant who posted it can mark as picked
+        if (food.restaurant.toString() !== req.user._id.toString()) {
+            return res.status(403).json({ message: "Not authorized" });
+        }
+
+        food.status = "picked";
+        await food.save();
+
+        res.json({ message: "Food marked as picked", food });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+exports.markDelivered = async (req, res) => {
+    try {
+        const food = await Food.findById(req.params.id);
+
+        if (!food) {
+            return res.status(404).json({ message: "Food not found" });
+        }
+
+        if (food.status !== "picked") {
+            return res.status(400).json({ message: "Food must be picked first" });
+        }
+
+        // Only NGO who reserved can confirm delivery
+        if (food.reservedBy.toString() !== req.user._id.toString()) {
+            return res.status(403).json({ message: "Not authorized" });
+        }
+
+        food.status = "delivered";
+        await food.save();
+
+        res.json({ message: "Food delivered successfully", food });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
