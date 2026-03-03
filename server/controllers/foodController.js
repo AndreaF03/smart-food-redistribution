@@ -81,3 +81,30 @@ exports.getNearbyFood = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+exports.reserveFood = async (req, res) => {
+    try {
+        if (req.user.role !== "ngo") {
+            return res.status(403).json({ message: "Only NGOs can reserve food" });
+        }
+
+        const food = await Food.findById(req.params.id);
+
+        if (!food) {
+            return res.status(404).json({ message: "Food not found" });
+        }
+
+        if (food.status !== "active") {
+            return res.status(400).json({ message: "Food already reserved or unavailable" });
+        }
+
+        food.status = "reserved";
+        food.reservedBy = req.user._id;
+
+        await food.save();
+
+        res.json({ message: "Food reserved successfully", food });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};

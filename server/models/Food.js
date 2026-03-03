@@ -43,7 +43,11 @@ const foodSchema = new mongoose.Schema({
         coordinates: {
             type: [Number], // [longitude, latitude]
         }
-    }
+    },
+    reservedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+}
 }, { timestamps: true });
 
 foodSchema.index({ location: "2dsphere" });
