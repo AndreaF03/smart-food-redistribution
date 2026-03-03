@@ -37,17 +37,32 @@ function NGODashboard() {
       {food.length === 0 && <p>No available food nearby</p>}
 
       {food.map(item => (
-        <div key={item._id} style={{ marginBottom: "15px" }}>
-          <strong>{item.foodType}</strong><br />
-          Quantity: {item.quantity} <br />
-          Freshness: {item.freshnessScore}% <br />
-          Restaurant: {item.restaurant?.name} <br />
+  <div key={item._id} style={{ marginBottom: "15px" }}>
+    <strong>{item.foodType}</strong><br />
+    Quantity: {item.quantity} <br />
+    Freshness: {item.freshnessScore}% <br />
+    Restaurant: {item.restaurant?.name} <br />
 
-          <button onClick={() => handleReserve(item._id)}>
-            Reserve
-          </button>
-        </div>
-      ))}
+    {item.status === "active" && (
+      <button onClick={() => handleReserve(item._id)}>
+        Reserve
+      </button>
+    )}
+
+    {item.status === "picked" && (
+      <button
+        onClick={async () => {
+          await axios.put(`/food/deliver/${item._id}`, {}, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          fetchNearbyFood();
+        }}
+      >
+        Mark Delivered
+      </button>
+    )}
+  </div>
+))}
     </div>
   );
 }

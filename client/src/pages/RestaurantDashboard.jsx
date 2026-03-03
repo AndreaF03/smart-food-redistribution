@@ -85,11 +85,26 @@ function RestaurantDashboard() {
 
       <h3>Your Listings</h3>
       {food.map((item) => (
-        <div key={item._id} style={{ marginBottom: "10px" }}>
-          <strong>{item.foodType}</strong> | Qty: {item.quantity} |
-          Status: {item.status} | Freshness: {item.freshnessScore}%
-        </div>
-      ))}
+  <div key={item._id} style={{ marginBottom: "15px" }}>
+    <strong>{item.foodType}</strong><br />
+    Quantity: {item.quantity} <br />
+    Status: {item.status} <br />
+    Freshness: {item.freshnessScore}% <br />
+
+    {item.status === "reserved" && (
+      <button
+        onClick={async () => {
+          await axios.put(`/food/pick/${item._id}`, {}, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          fetchFood();
+        }}
+      >
+        Mark Picked
+      </button>
+    )}
+  </div>
+))}
     </div>
   );
 }
