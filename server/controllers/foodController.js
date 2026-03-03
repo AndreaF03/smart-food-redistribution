@@ -54,15 +54,18 @@ exports.getNearbyFood = async (req, res) => {
             return res.status(403).json({ message: "Only NGOs can view nearby food" });
         }
 
-        if (!req.user.location || !req.user.location.coordinates) {
-            return res.status(400).json({ message: "NGO location not set properly" });
-        }
-
         const [longitude, latitude] = req.user.location.coordinates;
 
+        await Food.updateMany(
+            {
+                status: { $in: ["active", "reserved"] },
+                predictedExpiry: { $lt: new Date() }
+            },
+            { status: "expired" }
+        );
+
         const food = await Food.find({
-            status: "active",
-            predictedExpiry: { $gt: new Date() }
+            status: "active"
         }).find({
             location: {
                 $near: {
@@ -93,10 +96,20 @@ exports.reserveFood = async (req, res) => {
             return res.status(404).json({ message: "Food not found" });
         }
 
+        // Step 1: Check expiry first
+        if (food.predictedExpiry < new Date()) {
+            food.status = "expired";
+            await food.save();
+
+            return res.status(400).json({ message: "Food has expired" });
+        }
+
+        // Step 2: Check if active
         if (food.status !== "active") {
             return res.status(400).json({ message: "Food already reserved or unavailable" });
         }
 
+        // Step 3: Reserve
         food.status = "reserved";
         food.reservedBy = req.user._id;
 

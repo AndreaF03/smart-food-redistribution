@@ -31,7 +31,7 @@ const foodSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ["active", "reserved", "picked", "delivered"],
+        enum: ["active", "reserved", "picked", "delivered", "expired"],
         default: "active"
     },
     location: {
