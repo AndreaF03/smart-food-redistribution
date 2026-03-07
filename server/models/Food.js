@@ -8,11 +8,13 @@ const foodSchema = new mongoose.Schema({
     },
     foodType: {
         type: String,
-        required: true
+        required: true,
+        trim: true
     },
     quantity: {
         type: Number,
-        required: true
+        required: true,
+        min: 1
     },
     cookedTime: {
         type: Date,
@@ -24,10 +26,14 @@ const foodSchema = new mongoose.Schema({
         required: true
     },
     freshnessScore: {
-        type: Number
+        type: Number,
+        min: 0,
+        max: 100,
+        default: 100
     },
     predictedExpiry: {
-        type: Date
+        type: Date,
+        required: true
     },
     status: {
         type: String,
@@ -41,15 +47,20 @@ const foodSchema = new mongoose.Schema({
             default: "Point"
         },
         coordinates: {
-            type: [Number], // [longitude, latitude]
+            type: [Number],
+            required: true
         }
     },
     reservedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User"
-}
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User"
+    }
+
 }, { timestamps: true });
 
+// Indexes
 foodSchema.index({ location: "2dsphere" });
+foodSchema.index({ status: 1 });
+foodSchema.index({ restaurant: 1, status: 1 });
 
 module.exports = mongoose.model("Food", foodSchema);

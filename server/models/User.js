@@ -3,20 +3,26 @@ const mongoose = require("mongoose");
 const userSchema = new mongoose.Schema({
     name: {
         type: String,
-        required: true
+        required: true,
+        trim: true
     },
     email: {
         type: String,
         required: true,
-        unique: true
+        unique: true,
+        lowercase: true,
+        trim: true,
+        match: [/^\S+@\S+\.\S+$/, "Please enter a valid email"]
     },
     password: {
         type: String,
-        required: true
+        required: true,
+        minlength: 6,
+        select: false
     },
     role: {
         type: String,
-        enum: ["restaurant", "ngo", "volunteer", "admin"],
+        enum: ["restaurant", "ngo", "admin"],
         required: true
     },
     location: {
@@ -26,9 +32,11 @@ const userSchema = new mongoose.Schema({
             default: "Point"
         },
         coordinates: {
-            type: [Number], // [longitude, latitude]
+            type: [Number],
+            required: true
         }
     }
+
 }, { timestamps: true });
 
 userSchema.index({ location: "2dsphere" });

@@ -1,16 +1,23 @@
 const Food = require("../models/Food");
 
+/* =====================================
+   Freshness Calculation
+===================================== */
 const calculateFreshness = (cookedTime, storageType) => {
     const now = new Date();
     const cooked = new Date(cookedTime);
 
     const hoursPassed = (now - cooked) / (1000 * 60 * 60);
+    const maxHours = storageType === "refrigerated" ? 12 : 6;
 
-    let maxHours = storageType === "refrigerated" ? 12 : 6;
+    const freshnessScore = Math.max(
+        0,
+        100 - (hoursPassed / maxHours) * 100
+    );
 
-    let freshnessScore = Math.max(0, 100 - (hoursPassed / maxHours) * 100);
-
-    let predictedExpiry = new Date(cooked.getTime() + maxHours * 60 * 60 * 1000);
+    const predictedExpiry = new Date(
+        cooked.getTime() + maxHours * 60 * 60 * 1000
+    );
 
     return {
         freshnessScore: Math.round(freshnessScore),
@@ -18,6 +25,10 @@ const calculateFreshness = (cookedTime, storageType) => {
     };
 };
 
+
+/* =====================================
+   Create Food (Restaurant Only)
+===================================== */
 exports.createFood = async (req, res) => {
     try {
         if (req.user.role !== "restaurant") {
@@ -26,36 +37,62 @@ exports.createFood = async (req, res) => {
 
         const { foodType, quantity, cookedTime, storageType } = req.body;
 
-        const { freshnessScore, predictedExpiry } = calculateFreshness(
-            cookedTime,
-            storageType
-        );
+        if (!foodType || !quantity || !cookedTime || !storageType) {
+            return res.status(400).json({ message: "All fields are required" });
+        }
+
+        if (quantity <= 0) {
+            return res.status(400).json({ message: "Quantity must be positive" });
+        }
+
+        const allowedStorage = ["room", "refrigerated"];
+        if (!allowedStorage.includes(storageType)) {
+            return res.status(400).json({ message: "Invalid storage type" });
+        }
+
+        if (!req.user.location) {
+            return res.status(400).json({ message: "Restaurant location not set" });
+        }
+
+        const { freshnessScore, predictedExpiry } =
+            calculateFreshness(cookedTime, storageType);
 
         const food = await Food.create({
-        restaurant: req.user._id,
-        foodType,
-        quantity,
-        cookedTime,
-        storageType,
-        freshnessScore,
-        predictedExpiry,
-        location: req.user.location
-    });
+            restaurant: req.user.id,
+            foodType,
+            quantity,
+            cookedTime,
+            storageType,
+            freshnessScore,
+            predictedExpiry,
+            location: req.user.location,
+            status: "active"
+        });
 
         res.status(201).json(food);
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ message: error.message });
     }
 };
+
+
+/* =====================================
+   Get Nearby Food (NGO Only)
+===================================== */
 exports.getNearbyFood = async (req, res) => {
     try {
         if (req.user.role !== "ngo") {
             return res.status(403).json({ message: "Only NGOs can view nearby food" });
         }
 
+        if (!req.user.location) {
+            return res.status(400).json({ message: "NGO location not set" });
+        }
+
         const [longitude, latitude] = req.user.location.coordinates;
 
+        // Auto-expire outdated food
         await Food.updateMany(
             {
                 status: { $in: ["active", "reserved"] },
@@ -65,8 +102,7 @@ exports.getNearbyFood = async (req, res) => {
         );
 
         const food = await Food.find({
-            status: "active"
-        }).find({
+            status: "active",
             location: {
                 $near: {
                     $geometry: {
@@ -76,53 +112,63 @@ exports.getNearbyFood = async (req, res) => {
                     $maxDistance: 10000
                 }
             }
-        }).populate("restaurant", "name email");
+        })
+        .populate("restaurant", "name email")
+        .sort({ createdAt: -1 });
 
         res.json(food);
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ message: error.message });
     }
 };
+
+
+/* =====================================
+   Reserve Food (Race Safe)
+===================================== */
 exports.reserveFood = async (req, res) => {
     try {
         if (req.user.role !== "ngo") {
             return res.status(403).json({ message: "Only NGOs can reserve food" });
         }
 
-        const food = await Food.findById(req.params.id);
+        const food = await Food.findOneAndUpdate(
+            {
+                _id: req.params.id,
+                status: "active",
+                predictedExpiry: { $gt: new Date() }
+            },
+            {
+                status: "reserved",
+                reservedBy: req.user.id
+            },
+            { new: true }
+        );
 
         if (!food) {
-            return res.status(404).json({ message: "Food not found" });
+            return res.status(400).json({
+                message: "Food already reserved, expired, or unavailable"
+            });
         }
-
-        // Step 1: Check expiry first
-        if (food.predictedExpiry < new Date()) {
-            food.status = "expired";
-            await food.save();
-
-            return res.status(400).json({ message: "Food has expired" });
-        }
-
-        // Step 2: Check if active
-        if (food.status !== "active") {
-            return res.status(400).json({ message: "Food already reserved or unavailable" });
-        }
-
-        // Step 3: Reserve
-        food.status = "reserved";
-        food.reservedBy = req.user._id;
-
-        await food.save();
 
         res.json({ message: "Food reserved successfully", food });
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ message: error.message });
     }
 };
+
+
+/* =====================================
+   Mark Picked (Restaurant Only)
+===================================== */
 exports.markPicked = async (req, res) => {
     try {
+        if (req.user.role !== "restaurant") {
+            return res.status(403).json({ message: "Only restaurants allowed" });
+        }
+
         const food = await Food.findById(req.params.id);
 
         if (!food) {
@@ -133,8 +179,7 @@ exports.markPicked = async (req, res) => {
             return res.status(400).json({ message: "Food must be reserved first" });
         }
 
-        // Only restaurant who posted it can mark as picked
-        if (food.restaurant.toString() !== req.user._id.toString()) {
+        if (food.restaurant.toString() !== req.user.id) {
             return res.status(403).json({ message: "Not authorized" });
         }
 
@@ -144,11 +189,20 @@ exports.markPicked = async (req, res) => {
         res.json({ message: "Food marked as picked", food });
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ message: error.message });
     }
 };
+
+
+/* =====================================
+   Mark Delivered (NGO Only)
+===================================== */
 exports.markDelivered = async (req, res) => {
     try {
+        if (req.user.role !== "ngo") {
+            return res.status(403).json({ message: "Only NGOs allowed" });
+        }
+
         const food = await Food.findById(req.params.id);
 
         if (!food) {
@@ -159,8 +213,7 @@ exports.markDelivered = async (req, res) => {
             return res.status(400).json({ message: "Food must be picked first" });
         }
 
-        // Only NGO who reserved can confirm delivery
-        if (food.reservedBy.toString() !== req.user._id.toString()) {
+        if (food.reservedBy.toString() !== req.user.id) {
             return res.status(403).json({ message: "Not authorized" });
         }
 
@@ -170,9 +223,14 @@ exports.markDelivered = async (req, res) => {
         res.json({ message: "Food delivered successfully", food });
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ message: error.message });
     }
 };
+
+
+/* =====================================
+   NGO Dashboard
+===================================== */
 exports.getNGODashboard = async (req, res) => {
     try {
         if (req.user.role !== "ngo") {
@@ -180,7 +238,7 @@ exports.getNGODashboard = async (req, res) => {
         }
 
         const food = await Food.find({
-            reservedBy: req.user._id
+            reservedBy: req.user.id
         })
         .populate("restaurant", "name email")
         .sort({ createdAt: -1 });
@@ -188,9 +246,14 @@ exports.getNGODashboard = async (req, res) => {
         res.json(food);
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ message: error.message });
     }
 };
+
+
+/* =====================================
+   Restaurant Dashboard
+===================================== */
 exports.getRestaurantDashboard = async (req, res) => {
     try {
         if (req.user.role !== "restaurant") {
@@ -198,7 +261,7 @@ exports.getRestaurantDashboard = async (req, res) => {
         }
 
         const food = await Food.find({
-            restaurant: req.user._id
+            restaurant: req.user.id
         })
         .populate("reservedBy", "name email")
         .sort({ createdAt: -1 });
@@ -206,9 +269,14 @@ exports.getRestaurantDashboard = async (req, res) => {
         res.json(food);
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ message: error.message });
     }
 };
+
+
+/* =====================================
+   Admin Analytics
+===================================== */
 exports.getAdminAnalytics = async (req, res) => {
     try {
         if (req.user.role !== "admin") {
@@ -216,7 +284,6 @@ exports.getAdminAnalytics = async (req, res) => {
         }
 
         const totalListings = await Food.countDocuments();
-
         const deliveredCount = await Food.countDocuments({ status: "delivered" });
         const expiredCount = await Food.countDocuments({ status: "expired" });
         const activeCount = await Food.countDocuments({ status: "active" });
@@ -229,14 +296,30 @@ exports.getAdminAnalytics = async (req, res) => {
 
         const topRestaurants = await Food.aggregate([
             { $match: { status: "delivered" } },
-            { 
-                $group: { 
-                    _id: "$restaurant", 
-                    totalDelivered: { $sum: "$quantity" } 
-                } 
+            {
+                $group: {
+                    _id: "$restaurant",
+                    totalDelivered: { $sum: "$quantity" }
+                }
             },
             { $sort: { totalDelivered: -1 } },
-            { $limit: 5 }
+            { $limit: 5 },
+            {
+                $lookup: {
+                    from: "users",
+                    localField: "_id",
+                    foreignField: "_id",
+                    as: "restaurant"
+                }
+            },
+            { $unwind: "$restaurant" },
+            {
+                $project: {
+                    _id: 0,
+                    restaurantName: "$restaurant.name",
+                    totalDelivered: 1
+                }
+            }
         ]);
 
         res.json({
@@ -245,11 +328,12 @@ exports.getAdminAnalytics = async (req, res) => {
             expiredCount,
             activeCount,
             reservedCount,
-            totalQuantityRedistributed: totalQuantityRedistributed[0]?.total || 0,
+            totalQuantityRedistributed:
+                totalQuantityRedistributed[0]?.total || 0,
             topRestaurants
         });
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ message: error.message });
     }
 };
