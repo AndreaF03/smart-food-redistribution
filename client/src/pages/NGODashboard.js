@@ -1,167 +1,429 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import axios from "../api/axios";
+import { useNavigate } from "react-router-dom";
 
 function NGODashboard() {
+
   const [nearbyFood, setNearbyFood] = useState([]);
-  const [myFood, setMyFood] = useState([]);
+  const [myFood, setMyFood] = useState({ reserved: [], delivered: [] });
+
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
-  const token = localStorage.getItem("token");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-  const fetchData = async () => {
+  const [activeTab, setActiveTab] = useState("nearby");
+  const [actionLoading, setActionLoading] = useState({});
+
+  const navigate = useNavigate();
+
+  const fetchData = useCallback(async (silent = false) => {
+
+    const token = localStorage.getItem("token");
+
     try {
-      setLoading(true);
 
-      const nearbyRes = await axios.get("/food/nearby", {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      if (!silent) setLoading(true);
+      else setRefreshing(true);
 
-      const myRes = await axios.get("/food/ngo/dashboard", {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      setError("");
+
+      const [nearbyRes, myRes] = await Promise.all([
+        axios.get("/food/nearby", {
+          headers: { Authorization: `Bearer ${token}` }
+        }),
+        axios.get("/food/ngo/dashboard", {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+      ]);
 
       setNearbyFood(nearbyRes.data || []);
-      setMyFood(myRes.data || []);
+      setMyFood(myRes.data || { reserved: [], delivered: [] });
 
     } catch (err) {
-      console.error(err);
-      setMessage("Failed to load data ❌");
+
+      if (err.response?.status === 401) {
+        localStorage.clear();
+        navigate("/login");
+        return;
+      }
+
+      setError("Failed to load data. Please try again.");
+
     } finally {
+
       setLoading(false);
+      setRefreshing(false);
+
     }
-  };
+
+  }, [navigate]);
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [fetchData]);
 
-  const reserveFood = async (id) => {
+  const withActionLoading = async (id, fn) => {
+
+    setActionLoading(prev => ({
+      ...prev,
+      [id]: true
+    }));
+
     try {
-      await axios.put(`/food/reserve/${id}`, {}, {
+      await fn();
+    } finally {
+
+      setActionLoading(prev => ({
+        ...prev,
+        [id]: false
+      }));
+
+    }
+
+  };
+
+  const reserveFood = (id) => withActionLoading(id, async () => {
+
+    const token = localStorage.getItem("token");
+
+    try {
+
+      setSuccess("");
+      setError("");
+
+      await axios.patch(`/food/reserve/${id}`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      setMessage("Food reserved successfully ✅");
-      fetchData();
+      setSuccess("Food reserved successfully ✅");
+
+      fetchData(true);
 
     } catch (err) {
-      console.error(err);
-      setMessage("Reservation failed ❌");
-    }
-  };
 
-  const markDelivered = async (id) => {
+      setError(err.response?.data?.message || "Reservation failed.");
+
+    }
+
+  });
+
+  const markDelivered = (id) => withActionLoading(id, async () => {
+
+    const token = localStorage.getItem("token");
+
     try {
-      await axios.put(`/food/deliver/${id}`, {}, {
+
+      setSuccess("");
+      setError("");
+
+      await axios.patch(`/food/deliver/${id}`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      setMessage("Food delivered successfully ✅");
-      fetchData();
+      setSuccess("Delivery confirmed successfully ✅");
+
+      fetchData(true);
 
     } catch (err) {
-      console.error(err);
-      setMessage("Delivery failed ❌");
+
+      setError(err.response?.data?.message || "Delivery failed.");
+
     }
-  };
+
+  });
 
   const logout = () => {
     localStorage.clear();
-    window.location.href = "/login";
+    navigate("/login");
   };
 
+  const totalActive = myFood.reserved.length;
+
+  const tabs = [
+    { id: "nearby", label: "Available", icon: "📍", count: nearbyFood.length },
+    { id: "reserved", label: "Reserved", icon: "📦", count: myFood.reserved.length },
+    { id: "delivered", label: "Delivered", icon: "✅", count: myFood.delivered.length }
+  ];
+
+  if (loading) return (
+
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      minHeight: "100vh"
+    }}>
+
+      <div style={{
+        width: 32,
+        height: 32,
+        border: "3px solid #e2e8f0",
+        borderTopColor: "#16a34a",
+        borderRadius: "50%",
+        animation: "spin 0.7s linear infinite"
+      }} />
+
+      <p style={{
+        color: "#64748b",
+        marginTop: 16
+      }}>
+        Loading dashboard…
+      </p>
+
+    </div>
+
+  );
+
   return (
-    <div style={{ padding: "30px", maxWidth: "900px", margin: "auto" }}>
-      <h2>NGO Dashboard</h2>
-      <button onClick={logout}>Logout</button>
 
-      {message && <p style={{ color: "green" }}>{message}</p>}
+    <div className="dashboard">
 
-      {loading ? (
-        <p>Loading...</p>
-      ) : (
-        <>
-          {/* SECTION 1 */}
-          <h3>Nearby Available Food</h3>
+      {/* HEADER */}
 
-          {nearbyFood.length === 0 ? (
-            <p>No available food nearby.</p>
-          ) : (
-            nearbyFood.map((item) => (
-              <div key={item._id} style={styles.card}>
-                <strong>{item.foodType}</strong>
-                <p>Quantity: {item.quantity}</p>
-                <p>Freshness: {item.freshnessScore}%</p>
-                <p>Restaurant: {item.restaurant?.name || "Unknown"}</p>
+      <div className="header">
+
+        <div className="header-left">
+
+          <div className="header-logo">🌱</div>
+
+          <div>
+
+            <h2>NGO Dashboard</h2>
+            <div className="header-subtitle">
+              Smart Food Redistribution
+            </div>
+
+          </div>
+
+        </div>
+
+        <div className="header-actions">
+
+          <button
+            className="btn btn-ghost btn-icon"
+            onClick={() => fetchData(true)}
+            disabled={refreshing}
+          >
+            ↻
+          </button>
+
+          <button
+            className="btn btn-danger btn-sm"
+            onClick={logout}
+          >
+            ⎋ Logout
+          </button>
+
+        </div>
+
+      </div>
+
+      {/* ALERTS */}
+
+      {error && (
+
+        <div className="alert alert-error">
+          ⚠ {error}
+        </div>
+
+      )}
+
+      {success && (
+
+        <div className="alert alert-success">
+          {success}
+        </div>
+
+      )}
+
+      {/* STATS */}
+
+      <div className="stats-bar">
+
+        <div className="stat-card">
+          <div className="stat-number">{nearbyFood.length}</div>
+          <div className="stat-label">Available Nearby</div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-number">{totalActive}</div>
+          <div className="stat-label">Active Claims</div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-number">{myFood.delivered.length}</div>
+          <div className="stat-label">Delivered Total</div>
+        </div>
+
+      </div>
+
+      {/* TABS */}
+
+      <div className="tabs">
+
+        {tabs.map(tab => (
+
+          <button
+            key={tab.id}
+            className={`tab-btn${activeTab === tab.id ? " active" : ""}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+
+            <span>{tab.icon}</span>
+            <span>{tab.label}</span>
+            <span className="tab-count">{tab.count}</span>
+
+          </button>
+
+        ))}
+
+      </div>
+
+      {/* AVAILABLE */}
+
+      {activeTab === "nearby" && (
+
+        <div className="cards-grid">
+
+          {nearbyFood.map(item => (
+
+            <div key={item._id} className="card">
+
+              <div className="card-header">
+
+                <div className="card-title">
+                  {item.foodType}
+                </div>
+
+              </div>
+
+              <div className="card-meta">
+
+                <span className="meta-pill">
+                  📦 {item.quantity} units
+                </span>
+
+                <span className="meta-pill">
+                  🏪 {item.restaurant?.name || "Unknown"}
+                </span>
+
+              </div>
+
+              <div className="card-actions">
 
                 <button
-                  style={styles.reserveButton}
+                  className="btn btn-primary"
                   onClick={() => reserveFood(item._id)}
+                  disabled={!!actionLoading[item._id]}
                 >
-                  Reserve
+
+                  {actionLoading[item._id]
+                    ? "Reserving..."
+                    : "Reserve Food"}
+
                 </button>
+
               </div>
-            ))
-          )}
 
-          <hr />
+            </div>
 
-          {/* SECTION 2 */}
-          <h3>My Reserved Food</h3>
+          ))}
 
-          {myFood.length === 0 ? (
-            <p>No reserved food.</p>
-          ) : (
-            myFood.map((item) => (
-              <div key={item._id} style={styles.card}>
-                <strong>{item.foodType}</strong>
-                <p>Quantity: {item.quantity}</p>
-                <p>Status: {item.status}</p>
+        </div>
 
-                {item.status === "picked" && (
-                  <button
-                    style={styles.deliverButton}
-                    onClick={() => markDelivered(item._id)}
-                  >
-                    Confirm Delivery
-                  </button>
-                )}
-              </div>
-            ))
-          )}
-        </>
       )}
-    </div>
-  );
-}
 
-const styles = {
-  card: {
-    border: "1px solid #ccc",
-    padding: "15px",
-    borderRadius: "8px",
-    marginBottom: "15px",
-    backgroundColor: "#fafafa"
-  },
-  reserveButton: {
-    marginTop: "10px",
-    padding: "8px 14px",
-    backgroundColor: "#4CAF50",
-    color: "white",
-    border: "none",
-    borderRadius: "4px",
-    cursor: "pointer"
-  },
-  deliverButton: {
-    marginTop: "10px",
-    padding: "8px 14px",
-    backgroundColor: "#2196F3",
-    color: "white",
-    border: "none",
-    borderRadius: "4px",
-    cursor: "pointer"
-  }
-};
+      {/* RESERVED */}
+
+      {activeTab === "reserved" && (
+
+        <div className="cards-grid">
+
+          {myFood.reserved.map(item => (
+
+            <div key={item._id} className="card">
+
+              <div className="card-title">
+                {item.foodType}
+              </div>
+
+              <div className="card-meta">
+
+                <span className="meta-pill">
+                  📦 {item.quantity}
+                </span>
+
+                <span className="meta-pill">
+                  🏪 {item.restaurant?.name}
+                </span>
+
+              </div>
+
+              <p>
+                Waiting for delivery
+              </p>
+
+              <button
+                className="btn btn-action"
+                onClick={() => markDelivered(item._id)}
+                disabled={!!actionLoading[item._id]}
+              >
+
+                {actionLoading[item._id]
+                  ? "Confirming..."
+                  : "Confirm Delivery"}
+
+              </button>
+
+            </div>
+
+          ))}
+
+        </div>
+
+      )}
+
+      {/* DELIVERED */}
+
+      {activeTab === "delivered" && (
+
+        <div className="cards-grid">
+
+          {myFood.delivered.map(item => (
+
+            <div key={item._id} className="card faded">
+
+              <div className="card-title">
+                {item.foodType}
+              </div>
+
+              <div className="card-meta">
+
+                <span className="meta-pill">
+                  📦 {item.quantity}
+                </span>
+
+                <span className="meta-pill">
+                  🏪 {item.restaurant?.name}
+                </span>
+
+              </div>
+
+            </div>
+
+          ))}
+
+        </div>
+
+      )}
+
+    </div>
+
+  );
+
+}
 
 export default NGODashboard;

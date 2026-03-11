@@ -1,10 +1,36 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate
+} from "react-router-dom";
+
 import Register from "./pages/Register";
 import Login from "./pages/Login";
 import RestaurantDashboard from "./pages/RestaurantDashboard";
 import NGODashboard from "./pages/NGODashboard";
 import AdminDashboard from "./pages/AdminDashboard";
+import AddDonation from "./pages/AddDonation";
 import ProtectedRoute from "./components/ProtectedRoute";
+
+/* ==========================
+   Simple fallback pages
+========================== */
+const Unauthorized = () => (
+  <div style={{ textAlign: "center", marginTop: "100px" }}>
+    <h2>403 — Access Denied</h2>
+    <p>You don't have permission to view this page.</p>
+    <a href="/login">Back to Login</a>
+  </div>
+);
+
+const NotFound = () => (
+  <div style={{ textAlign: "center", marginTop: "100px" }}>
+    <h2>404 — Page Not Found</h2>
+    <p>The page you're looking for doesn't exist.</p>
+    <a href="/login">Back to Login</a>
+  </div>
+);
 
 function App() {
   return (
@@ -18,7 +44,10 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
 
-        {/* Restaurant */}
+        {/* Fixed: unauthorized page for wrong-role redirects */}
+        <Route path="/unauthorized" element={<Unauthorized />} />
+
+        {/* Restaurant Routes */}
         <Route
           path="/restaurant"
           element={
@@ -28,7 +57,16 @@ function App() {
           }
         />
 
-        {/* NGO */}
+        <Route
+          path="/add-donation"
+          element={
+            <ProtectedRoute role="restaurant">
+              <AddDonation />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* NGO Dashboard */}
         <Route
           path="/ngo"
           element={
@@ -38,7 +76,7 @@ function App() {
           }
         />
 
-        {/* Admin */}
+        {/* Admin Dashboard */}
         <Route
           path="/admin"
           element={
@@ -48,8 +86,8 @@ function App() {
           }
         />
 
-        {/* Unknown Routes */}
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        {/* Fixed: 404 page instead of silent redirect to /login */}
+        <Route path="*" element={<NotFound />} />
 
       </Routes>
     </Router>

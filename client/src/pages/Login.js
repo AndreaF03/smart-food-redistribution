@@ -1,60 +1,74 @@
-import React, { useState, useEffect } from "react";
 import axios from "../api/axios";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
+import { jwtDecode } from "jwt-decode";
+import { useState, useEffect, useCallback } from "react";
 
 const Login = () => {
   const navigate = useNavigate();
 
   const [formData, setFormData] = useState({
     email: "",
-    password: "",
+    password: ""
   });
 
-  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // If already logged in, redirect
+  const redirectByRole = useCallback((role) => {
+    if (role === "restaurant") navigate("/restaurant");
+    else if (role === "ngo") navigate("/ngo");
+    else if (role === "admin") navigate("/admin");
+  }, [navigate]);
+
   useEffect(() => {
     const token = localStorage.getItem("token");
-    const role = localStorage.getItem("role");
+    if (!token) return;
 
-    if (token && role) {
-      if (role === "restaurant") navigate("/restaurant");
-      else if (role === "ngo") navigate("/ngo");
-      else if (role === "admin") navigate("/admin");
+    try {
+      const decoded = jwtDecode(token);
+
+      if (decoded.exp * 1000 < Date.now()) {
+        localStorage.clear();
+        return;
+      }
+
+      redirectByRole(decoded.role);
+
+    } catch {
+      localStorage.clear();
     }
-  }, [navigate]);
+  }, [navigate, redirectByRole]); // Fixed: added redirectByRole
 
   const handleChange = (e) => {
     setFormData({
       ...formData,
-      [e.target.name]: e.target.value,
+      [e.target.name]: e.target.value
     });
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError("");
+    setSuccess("");
 
     try {
       setLoading(true);
-      setMessage("");
 
       const res = await axios.post("/auth/login", formData);
 
-      localStorage.setItem("token", res.data.token);
-      localStorage.setItem("role", res.data.role);
+      const token = res.data.token;
+      const role = res.data.role;
 
-      // Redirect based on role
-      if (res.data.role === "restaurant") {
-        navigate("/restaurant");
-      } else if (res.data.role === "ngo") {
-        navigate("/ngo");
-      } else if (res.data.role === "admin") {
-        navigate("/admin");
-      }
+      localStorage.setItem("token", token);
+      localStorage.setItem("role", role);
 
-    } catch (error) {
-      setMessage(error.response?.data?.message || "Login failed ❌");
+      setSuccess("Login successful! Redirecting...");
+
+      setTimeout(() => redirectByRole(role), 1000);
+
+    } catch (err) {
+      setError(err.response?.data?.message || "Login failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -65,11 +79,13 @@ const Login = () => {
       <h2>Login</h2>
 
       <form onSubmit={handleSubmit} style={styles.form}>
+
         <input
           type="email"
           name="email"
           placeholder="Email"
           required
+          value={formData.email}
           onChange={handleChange}
           style={styles.input}
         />
@@ -79,6 +95,7 @@ const Login = () => {
           name="password"
           placeholder="Password"
           required
+          value={formData.password}
           onChange={handleChange}
           style={styles.input}
         />
@@ -86,9 +103,17 @@ const Login = () => {
         <button type="submit" style={styles.button} disabled={loading}>
           {loading ? "Logging in..." : "Login"}
         </button>
+
       </form>
 
-      {message && <p style={{ color: "red" }}>{message}</p>}
+      {error && <p style={{ color: "red", marginTop: "10px" }}>{error}</p>}
+      {success && <p style={{ color: "green", marginTop: "10px" }}>{success}</p>}
+
+      <p style={{ marginTop: "15px" }}>
+        Don't have an account?{" "}
+        <Link to="/register">Register here</Link>
+      </p>
+
     </div>
   );
 };
@@ -96,27 +121,32 @@ const Login = () => {
 const styles = {
   container: {
     width: "400px",
-    margin: "100px auto",
+    margin: "120px auto",
     padding: "30px",
     boxShadow: "0 0 10px rgba(0,0,0,0.1)",
     borderRadius: "10px",
-    textAlign: "center",
+    textAlign: "center"
   },
   form: {
     display: "flex",
-    flexDirection: "column",
+    flexDirection: "column"
   },
   input: {
     margin: "10px 0",
-    padding: "10px",
+    padding: "12px",
+    borderRadius: "5px",
+    border: "1px solid #ccc"
   },
   button: {
-    padding: "10px",
+    padding: "12px",
+    marginTop: "10px",
     backgroundColor: "#2196F3",
     color: "white",
     border: "none",
+    borderRadius: "5px",
     cursor: "pointer",
-  },
+    fontWeight: "bold"
+  }
 };
 
 export default Login;

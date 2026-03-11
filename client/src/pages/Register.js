@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import axios from "../api/axios";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 
 const Register = () => {
   const navigate = useNavigate();
@@ -9,9 +9,10 @@ const Register = () => {
     name: "",
     email: "",
     password: "",
-    role: "restaurant",
+    confirmPassword: "",
+    role: "ngo",
     latitude: "",
-    longitude: "",
+    longitude: ""
   });
 
   const [message, setMessage] = useState("");
@@ -21,35 +22,53 @@ const Register = () => {
   const handleChange = (e) => {
     setFormData({
       ...formData,
-      [e.target.name]: e.target.value,
+      [e.target.name]: e.target.value
     });
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
-    setLoading(true);
     setMessage("");
     setIsError(false);
 
+    // Client-side password match check
+    if (formData.password !== formData.confirmPassword) {
+      setIsError(true);
+      setMessage("Passwords do not match");
+      return;
+    }
+
+    // Client-side password length check
+    if (formData.password.length < 8) {
+      setIsError(true);
+      setMessage("Password must be at least 8 characters");
+      return;
+    }
+
+    setLoading(true);
+
     try {
+      // Fixed: destructure out confirmPassword and role — don't send to backend
+      const { confirmPassword, role, latitude, longitude, ...rest } = formData;
+
       const res = await axios.post("/auth/register", {
-        ...formData,
-        latitude: Number(formData.latitude),
-        longitude: Number(formData.longitude),
+        ...rest,
+        // Fixed: send as GeoJSON — coordinates are [longitude, latitude]
+        location: {
+          type: "Point",
+          coordinates: [Number(longitude), Number(latitude)]
+        }
       });
 
-      setMessage(res.data.message);
       setIsError(false);
+      setMessage(res.data.message || "Registered successfully!");
 
-      setTimeout(() => {
-        navigate("/login");
-      }, 1500);
+      setTimeout(() => navigate("/login"), 1500);
 
     } catch (error) {
       setIsError(true);
       setMessage(
-        error.response?.data?.message || "Registration failed"
+        error.response?.data?.message || "Registration failed. Please try again."
       );
     } finally {
       setLoading(false);
@@ -61,6 +80,7 @@ const Register = () => {
       <h2>Register</h2>
 
       <form onSubmit={handleSubmit} style={styles.form}>
+
         <input
           type="text"
           name="name"
@@ -84,22 +104,34 @@ const Register = () => {
         <input
           type="password"
           name="password"
-          placeholder="Password"
+          placeholder="Password (min 8 characters)"
           required
+          minLength={8}
           value={formData.password}
           onChange={handleChange}
           style={styles.input}
         />
 
+        {/* Fixed: added confirm password field */}
+        <input
+          type="password"
+          name="confirmPassword"
+          placeholder="Confirm Password"
+          required
+          value={formData.confirmPassword}
+          onChange={handleChange}
+          style={styles.input}
+        />
+
+        {/* Fixed: removed "admin" option */}
         <select
           name="role"
           value={formData.role}
           onChange={handleChange}
           style={styles.input}
         >
-          <option value="restaurant">Restaurant</option>
           <option value="ngo">NGO</option>
-          <option value="admin">Admin</option>
+          <option value="restaurant">Restaurant</option>
         </select>
 
         <input
@@ -139,6 +171,7 @@ const Register = () => {
         >
           {loading ? "Registering..." : "Register"}
         </button>
+
       </form>
 
       {message && (
@@ -146,6 +179,13 @@ const Register = () => {
           {message}
         </p>
       )}
+
+      {/* Fixed: link back to login */}
+      <p style={{ marginTop: "15px" }}>
+        Already have an account?{" "}
+        <Link to="/login">Login here</Link>
+      </p>
+
     </div>
   );
 };
@@ -157,23 +197,23 @@ const styles = {
     padding: "30px",
     boxShadow: "0 0 10px rgba(0,0,0,0.1)",
     borderRadius: "10px",
-    textAlign: "center",
+    textAlign: "center"
   },
   form: {
     display: "flex",
-    flexDirection: "column",
+    flexDirection: "column"
   },
   input: {
     margin: "10px 0",
     padding: "10px",
-    fontSize: "14px",
+    fontSize: "14px"
   },
   button: {
     padding: "10px",
     backgroundColor: "#4CAF50",
     color: "white",
-    border: "none",
-  },
+    border: "none"
+  }
 };
 
 export default Register;
