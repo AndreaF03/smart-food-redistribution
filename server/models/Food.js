@@ -1,13 +1,13 @@
 const mongoose = require("mongoose");
 
-const foodSchema = new mongoose.Schema({
+const foodSchema = new mongoose.Schema(
+{
     restaurant: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "User",
         required: [true, "Restaurant is required"]
     },
 
-    // Fixed: added enum + maxlength
     foodType: {
         type: String,
         required: [true, "Food type is required"],
@@ -22,7 +22,6 @@ const foodSchema = new mongoose.Schema({
         min: [1, "Quantity must be at least 1"]
     },
 
-    // Fixed: added future-date validator
     cookedTime: {
         type: Date,
         required: [true, "Cooked time is required"],
@@ -38,7 +37,6 @@ const foodSchema = new mongoose.Schema({
         required: [true, "Storage type is required"]
     },
 
-    // Fixed: now required instead of relying on default
     freshnessScore: {
         type: Number,
         required: [true, "Freshness score is required"],
@@ -57,15 +55,27 @@ const foodSchema = new mongoose.Schema({
         default: "active"
     },
 
+    // ✅ Correct GeoJSON location structure
     location: {
         type: {
             type: String,
             enum: ["Point"],
-            default: "Point"
+            default: "Point",
+            required: true
         },
         coordinates: {
-            type: [Number],
-            required: [true, "Location coordinates are required"]
+            type: [Number], // [longitude, latitude]
+            required: true,
+            validate: {
+                validator: function (v) {
+                    return v.length === 2;
+                },
+                message: "Coordinates must be [longitude, latitude]"
+            }
+        },
+        address: {
+            type: String,
+            trim: true
         }
     },
 
@@ -74,7 +84,6 @@ const foodSchema = new mongoose.Schema({
         ref: "User"
     },
 
-    // Added: reservation and delivery timestamps for analytics
     reservedAt: {
         type: Date
     },
@@ -82,17 +91,21 @@ const foodSchema = new mongoose.Schema({
     deliveredAt: {
         type: Date
     },
+
     image: {
-  type: String
-}
+        type: String
+    }
 
-}, { timestamps: true });
+},
+{ timestamps: true }
+);
 
-// Indexes
+// 🌍 Geo index for nearby search
 foodSchema.index({ location: "2dsphere" });
+
+// Other indexes
 foodSchema.index({ status: 1 });
 foodSchema.index({ restaurant: 1, status: 1 });
-// Fixed: index for auto-expire query performance
 foodSchema.index({ predictedExpiry: 1 });
 
 module.exports = mongoose.model("Food", foodSchema);

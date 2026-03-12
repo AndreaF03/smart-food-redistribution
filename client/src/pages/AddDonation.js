@@ -6,63 +6,65 @@ function AddDonation() {
 
   const navigate = useNavigate();
 
-  const [foodName, setFoodName] = useState("");
+  const [foodType, setFoodType] = useState("cooked");
   const [quantity, setQuantity] = useState("");
-  const [pickupLocation, setPickupLocation] = useState("");
-  const [expiryTime, setExpiryTime] = useState("");
-  const [image, setImage] = useState(null); // ✅ added image state
+  const [cookedTime, setCookedTime] = useState("");
+  const [storageType, setStorageType] = useState("room");
+  const [image, setImage] = useState(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
   const handleSubmit = async (e) => {
+
     e.preventDefault();
     setError("");
     setSuccess("");
 
-    if (new Date(expiryTime) <= new Date()) {
-      setError("Expiry time must be in the future");
-      return;
-    }
-
     try {
+
       setLoading(true);
 
       const formData = new FormData();
-      formData.append("foodName", foodName);
+
+      formData.append("foodType", foodType);
       formData.append("quantity", Number(quantity));
-      formData.append("pickupLocation", pickupLocation);
-      formData.append("expiryTime", expiryTime);
+      formData.append("cookedTime", cookedTime);
+      formData.append("storageType", storageType);
 
       if (image) {
         formData.append("image", image);
       }
 
-      await axios.post("/donations", formData, {
+      await axios.post("/food", formData, {
         headers: {
           "Content-Type": "multipart/form-data"
         }
       });
 
-      setSuccess("Donation added successfully ✅");
+      setSuccess("Food donation added successfully ✅");
 
-      setFoodName("");
       setQuantity("");
-      setPickupLocation("");
-      setExpiryTime("");
+      setCookedTime("");
       setImage(null);
 
       setTimeout(() => navigate("/restaurant"), 1500);
 
     } catch (err) {
+
       console.error(err);
+
       setError(
         err.response?.data?.message || "Donation failed. Please try again."
       );
+
     } finally {
+
       setLoading(false);
+
     }
+
   };
 
   return (
@@ -75,14 +77,19 @@ function AddDonation() {
 
       <form onSubmit={handleSubmit} style={styles.form}>
 
-        <input
-          type="text"
-          placeholder="Food Name"
-          required
-          value={foodName}
-          onChange={(e) => setFoodName(e.target.value)}
-        />
+        {/* Food Type */}
+        <select
+          value={foodType}
+          onChange={(e) => setFoodType(e.target.value)}
+        >
+          <option value="cooked">Cooked Food</option>
+          <option value="raw">Raw Food</option>
+          <option value="packaged">Packaged</option>
+          <option value="beverages">Beverages</option>
+          <option value="other">Other</option>
+        </select>
 
+        {/* Quantity */}
         <input
           type="number"
           placeholder="Quantity"
@@ -92,22 +99,24 @@ function AddDonation() {
           onChange={(e) => setQuantity(e.target.value)}
         />
 
-        <input
-          type="text"
-          placeholder="Pickup Location"
-          required
-          value={pickupLocation}
-          onChange={(e) => setPickupLocation(e.target.value)}
-        />
-
+        {/* Cooked Time */}
         <input
           type="datetime-local"
           required
-          value={expiryTime}
-          onChange={(e) => setExpiryTime(e.target.value)}
+          value={cookedTime}
+          onChange={(e) => setCookedTime(e.target.value)}
         />
 
-        {/* ✅ Fixed image upload */}
+        {/* Storage Type */}
+        <select
+          value={storageType}
+          onChange={(e) => setStorageType(e.target.value)}
+        >
+          <option value="room">Room Temperature</option>
+          <option value="refrigerated">Refrigerated</option>
+        </select>
+
+        {/* Image Upload */}
         <input
           type="file"
           accept="image/*"

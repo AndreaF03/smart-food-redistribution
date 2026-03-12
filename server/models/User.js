@@ -16,7 +16,6 @@ const userSchema = new mongoose.Schema({
         unique: true,
         lowercase: true,
         trim: true,
-        // Fixed: proper email validation
         validate: {
             validator: (v) => validator.isEmail(v),
             message: "Please enter a valid email"
@@ -26,7 +25,6 @@ const userSchema = new mongoose.Schema({
     password: {
         type: String,
         required: [true, "Password is required"],
-        // Fixed: 8 instead of 6
         minlength: [8, "Password must be at least 8 characters"],
         select: false
     },
@@ -34,28 +32,64 @@ const userSchema = new mongoose.Schema({
     role: {
         type: String,
         enum: ["restaurant", "ngo", "admin"],
-        // Fixed: safe default so client never needs to send role
         default: "ngo"
     },
 
+    /* ==========================
+       GeoJSON Location
+    ========================== */
+
     location: {
+
         type: {
             type: String,
             enum: ["Point"],
             default: "Point"
         },
-        // Fixed: no default coordinates — location is optional
+
         coordinates: {
-            type: [Number]
+            type: [Number],
+
+            validate: {
+                validator: function (v) {
+
+                    if (!v) return true;
+
+                    if (v.length !== 2) return false;
+
+                    const [lng, lat] = v;
+
+                    return (
+                        lng >= -180 &&
+                        lng <= 180 &&
+                        lat >= -90 &&
+                        lat <= 90
+                    );
+                },
+
+                message: "Coordinates must be [longitude, latitude]"
+            }
+
+        },
+
+        address: {
+            type: String,
+            trim: true
         }
+
     }
 
 }, { timestamps: true });
 
+
 /* ==========================
-   Geo index — sparse so documents
-   without location are excluded
+   Geo Index (Sparse)
 ========================== */
-userSchema.index({ location: "2dsphere" }, { sparse: true });
+
+userSchema.index(
+    { location: "2dsphere" },
+    { sparse: true }
+);
+
 
 module.exports = mongoose.model("User", userSchema);
