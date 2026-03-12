@@ -5,19 +5,17 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const helmet = require("helmet");
 
-const authRoutes = require("./routes/authRoutes");
+const authRoutes     = require("./routes/authRoutes");
 const donationRoutes = require("./routes/donationRoutes");
-const foodRoutes = require("./routes/foodRoutes");
+const foodRoutes     = require("./routes/foodRoutes");
 
 const { notFound, errorHandler } = require("./middleware/errorMiddleware");
-const { initSocket } = require("./socket");
-const ratingRoutes = require("./routes/ratingRoutes");
-const app = express();
+const { initSocket }   = require("./socket");
+const { startExpireJob } = require("./jobs/expireFood");   // ← NEW
 
-// Create HTTP server manually so Socket.io can attach to it
+const app    = express();
 const server = http.createServer(app);
 
-// Initialize Socket.io on the same server
 initSocket(server);
 
 /* ==========================
@@ -74,10 +72,10 @@ app.use((req, res, next) => {
 /* ==========================
    Routes
 ========================== */
-app.use("/api/auth", authRoutes);
+app.use("/api/auth",      authRoutes);
 app.use("/api/donations", donationRoutes);
-app.use("/api/food", foodRoutes);
-app.use("/api/ratings", ratingRoutes);
+app.use("/api/food",      foodRoutes);
+
 /* ==========================
    Error Handling
 ========================== */
@@ -89,7 +87,10 @@ app.use(errorHandler);
 ========================== */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB Connected"))
+  .then(() => {
+    console.log("MongoDB Connected");
+    startExpireJob();   // ← NEW: start only after DB is ready
+  })
   .catch((err) => {
     console.error("MongoDB connection failed:", err);
     process.exit(1);
@@ -97,9 +98,6 @@ mongoose
 
 /* ==========================
    Server
-   Important: use server.listen
-   NOT app.listen — otherwise
-   Socket.io won't work
 ========================== */
 const PORT = process.env.PORT || 5000;
 
