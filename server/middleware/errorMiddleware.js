@@ -3,7 +3,7 @@
 ========================= */
 exports.notFound = (req, res, next) => {
   const error = new Error(`Not Found - ${req.originalUrl}`);
-  res.status(404);
+  error.statusCode = 404;
   next(error);
 };
 
@@ -16,30 +16,52 @@ exports.errorHandler = (err, req, res, next) => {
   // Always log the full error server-side
   console.error("SERVER ERROR:", err);
 
-  let statusCode = res.statusCode === 200 ? 500 : res.statusCode;
+  let statusCode = err.statusCode || (res.statusCode === 200 ? 500 : res.statusCode);
   let message = err.message || "Server Error";
 
-  // Mongoose invalid ObjectId (e.g. /api/food/notanid)
+
+  /* =========================
+     Mongoose CastError
+     (invalid ObjectId)
+  ========================= */
   if (err.name === "CastError") {
     statusCode = 400;
-    message = `Invalid ${err.path}: ${err.value}`;
+
+    message =
+      process.env.NODE_ENV === "production"
+        ? "Invalid ID format"
+        : `Invalid ${err.path}: ${err.value}`;
   }
 
-  // Mongoose duplicate key (e.g. duplicate email)
+
+  /* =========================
+     Duplicate Key Error
+  ========================= */
   if (err.code === 11000) {
     statusCode = 409;
-    message = `Duplicate value for: ${Object.keys(err.keyValue).join(", ")}`;
+
+    message =
+      process.env.NODE_ENV === "production"
+        ? "An account with these details already exists"
+        : `Duplicate value for: ${Object.keys(err.keyValue).join(", ")}`;
   }
 
-  // Mongoose schema validation failure
+
+  /* =========================
+     Mongoose Validation Error
+  ========================= */
   if (err.name === "ValidationError") {
     statusCode = 400;
+
     message = Object.values(err.errors)
       .map((e) => e.message)
       .join(", ");
   }
 
-  // JWT errors (in case they bubble up past authMiddleware)
+
+  /* =========================
+     JWT Errors
+  ========================= */
   if (err.name === "JsonWebTokenError") {
     statusCode = 401;
     message = "Invalid token";
@@ -50,10 +72,37 @@ exports.errorHandler = (err, req, res, next) => {
     message = "Token has expired, please log in again";
   }
 
+
+  /* =========================
+     Multer Upload Errors
+  ========================= */
+  if (err.name === "MulterError") {
+    statusCode = 400;
+
+    message =
+      err.code === "LIMIT_FILE_SIZE"
+        ? "File too large. Maximum size is 5MB"
+        : `Upload error: ${err.message}`;
+  }
+
+
+  /* =========================
+     MongoDB Network Errors
+  ========================= */
+  if (
+    err.name === "MongoNetworkError" ||
+    err.name === "MongoServerSelectionError"
+  ) {
+    statusCode = 503;
+    message = "Database unavailable, please try again later";
+  }
+
+
   res.status(statusCode).json({
     success: false,
     message,
-    // Cleanly exclude stack in production
+
+    // Show stack only in development
     ...(process.env.NODE_ENV !== "production" && { stack: err.stack })
   });
 };

@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const rateLimit = require("express-rate-limit");
-const multer = require("multer");
+const { ipKeyGenerator } = require("express-rate-limit");
 
 const {
   createDonation,
@@ -11,33 +11,45 @@ const {
 } = require("../controllers/donationController");
 
 const { protect, authorizeRoles } = require("../middleware/authMiddleware");
+const upload = require("../middleware/uploadMiddleware");
+
 
 /* =====================================
-   Multer Config (Image Upload)
-===================================== */
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, "uploads/");
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + "-" + file.originalname);
-  }
-});
-
-const upload = multer({ storage });
-
-/* =====================================
-   Rate limiter
+   Rate limiter (per authenticated user)
 ===================================== */
 
 const createLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 30,
+  keyGenerator: (req) => req.user?.id || ipKeyGenerator(req),
+  standardHeaders: true,
+  legacyHeaders: false,
   message: {
-    message: "Too many donations created from this IP, please try again later"
+    message: "Too many donations created, please try again later"
   }
 });
+
+
+/* =====================================
+   Upload Error Handler
+===================================== */
+
+const handleUpload = (req, res, next) => {
+  upload.single("image")(req, res, (err) => {
+
+    if (err) {
+      return res.status(400).json({
+        message:
+          err.code === "LIMIT_FILE_SIZE"
+            ? "Image must be under 5MB"
+            : err.message
+      });
+    }
+
+    next();
+  });
+};
+
 
 /* =====================================
    Create Donation (Restaurant only)
@@ -45,15 +57,17 @@ const createLimiter = rateLimit({
 
 router.post(
   "/",
-  createLimiter,
   protect,
   authorizeRoles("restaurant"),
-  upload.single("image"), // ✅ IMPORTANT FIX
+  createLimiter,
+  handleUpload,
   createDonation
 );
 
+
 /* =====================================
-   Get All Donations (NGO + Admin)
+   Get All Available Donations
+   (NGO + Admin)
 ===================================== */
 
 router.get(
@@ -62,6 +76,7 @@ router.get(
   authorizeRoles("ngo", "admin"),
   getDonations
 );
+
 
 /* =====================================
    Get My Donations (Restaurant only)
@@ -73,6 +88,7 @@ router.get(
   authorizeRoles("restaurant"),
   getMyDonations
 );
+
 
 /* =====================================
    Delete Donation (Restaurant only)

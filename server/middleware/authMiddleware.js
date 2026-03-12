@@ -11,7 +11,6 @@ exports.protect = async (req, res, next) => {
 
     let token;
 
-    // Fixed: "Bearer " with space to prevent "Bearertoken" matching
     if (
       req.headers.authorization &&
       req.headers.authorization.startsWith("Bearer ")
@@ -19,20 +18,22 @@ exports.protect = async (req, res, next) => {
       token = req.headers.authorization.split(" ")[1];
     }
 
-    if (!token) {
+    if (!token || token.length < 20) {
       return res.status(401).json({
-        message: "Not authorized, no token"
+        message: "Invalid token format"
       });
     }
 
-    // Guard against missing JWT_SECRET
     if (!process.env.JWT_SECRET) {
       throw new Error("JWT_SECRET is not defined in environment variables");
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await User.findById(decoded.id).select("-password");
+    /* Fetch user (lean object for performance) */
+    const user = await User.findById(decoded.id)
+      .select("-password")
+      .lean();
 
     if (!user) {
       return res.status(401).json({
@@ -40,14 +41,25 @@ exports.protect = async (req, res, next) => {
       });
     }
 
+    /* Check if password changed after token issued */
+    if (user.passwordChangedAt) {
+      const changedAt = parseInt(user.passwordChangedAt.getTime() / 1000);
+
+      if (decoded.iat < changedAt) {
+        return res.status(401).json({
+          message: "Password was recently changed, please log in again"
+        });
+      }
+    }
+
     req.user = user;
+
     next();
 
   } catch (error) {
 
     console.error("AUTH ERROR:", error);
 
-    // Distinguish between expired and invalid token
     if (error.name === "TokenExpiredError") {
       return res.status(401).json({
         message: "Token has expired, please log in again"
@@ -75,10 +87,11 @@ exports.authorizeRoles = (...roles) => {
 
   return (req, res, next) => {
 
-    // Guard against protect middleware not being applied
     if (!req.user) {
+      console.error("authorizeRoles called without protect middleware");
+
       return res.status(401).json({
-        message: "Not authenticated"
+        message: "Not authenticated — protect middleware missing on this route"
       });
     }
 

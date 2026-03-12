@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: [true, "Name is required"],
         trim: true,
+        minlength: [2, "Name must be at least 2 characters"],
         maxlength: [100, "Name cannot exceed 100 characters"]
     },
 
@@ -36,7 +37,7 @@ const userSchema = new mongoose.Schema({
     },
 
     /* ==========================
-       GeoJSON Location
+       GeoJSON Location (Optional)
     ========================== */
 
     location: {
@@ -49,6 +50,7 @@ const userSchema = new mongoose.Schema({
 
         coordinates: {
             type: [Number],
+            default: undefined, // prevents empty [] from being stored
 
             validate: {
                 validator: function (v) {
@@ -83,13 +85,16 @@ const userSchema = new mongoose.Schema({
 
 
 /* ==========================
-   Geo Index (Sparse)
+   Indexes
 ========================== */
 
 userSchema.index(
     { location: "2dsphere" },
     { sparse: true }
 );
+
+// Fast filtering for dashboards
+userSchema.index({ role: 1 });
 
 
 module.exports = mongoose.model("User", userSchema);

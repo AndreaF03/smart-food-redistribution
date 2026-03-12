@@ -12,8 +12,7 @@ const foodSchema = new mongoose.Schema(
         type: String,
         required: [true, "Food type is required"],
         trim: true,
-        enum: ["cooked", "raw", "packaged", "beverages", "other"],
-        maxlength: [100, "Food type cannot exceed 100 characters"]
+        enum: ["cooked", "raw", "packaged", "beverages", "other"]
     },
 
     quantity: {
@@ -55,7 +54,10 @@ const foodSchema = new mongoose.Schema(
         default: "active"
     },
 
-    // ✅ Correct GeoJSON location structure
+    /* ==========================
+       GeoJSON Location
+    ========================== */
+
     location: {
         type: {
             type: String,
@@ -93,19 +95,34 @@ const foodSchema = new mongoose.Schema(
     },
 
     image: {
-        type: String
+        type: String,
+        default: ""
     }
 
 },
 { timestamps: true }
 );
 
-// 🌍 Geo index for nearby search
+
+/* ==========================
+   Indexes
+========================== */
+
+// 🌍 Geo index for nearby food search
 foodSchema.index({ location: "2dsphere" });
 
-// Other indexes
+// Query optimization
 foodSchema.index({ status: 1 });
 foodSchema.index({ restaurant: 1, status: 1 });
+
+// Expiry monitoring
 foodSchema.index({ predictedExpiry: 1 });
+
+// NGO dashboard queries
+foodSchema.index({ reservedBy: 1, status: 1 });
+
+// Delivery analytics
+foodSchema.index({ deliveredAt: 1 });
+
 
 module.exports = mongoose.model("Food", foodSchema);

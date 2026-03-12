@@ -2,20 +2,29 @@ const express = require("express");
 const router = express.Router();
 const rateLimit = require("express-rate-limit");
 
-const { register, login } = require("../controllers/authController");
+const { register, login, getMe } = require("../controllers/authController");
+const { protect } = require("../middleware/authMiddleware");
 
 
-
-// Rate limiter — max 10 attempts per 15 minutes
-const authLimiter = rateLimit({
+const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  message: {
-    message: "Too many attempts from this IP, please try again later"
-  }
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many login attempts, please try again later" }
 });
 
-router.post("/register", authLimiter, register);
-router.post("/login", authLimiter, login);
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many accounts created from this IP, please try again later" }
+});
+
+router.post("/register", registerLimiter, register);
+router.post("/login", loginLimiter, login);
+
+router.get("/me", protect, getMe);
 
 module.exports = router;

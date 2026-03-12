@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Food = require("../models/Food");
 const { getIO } = require("../socket");
 
@@ -37,7 +38,7 @@ const calculateFreshness = (cookedTime, storageType) => {
 
 
 /* =====================================
-   Create Food (Restaurant Only)
+   Create Food
 ===================================== */
 exports.createFood = async (req, res) => {
   try {
@@ -52,8 +53,8 @@ exports.createFood = async (req, res) => {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    if (quantity <= 0) {
-      return res.status(400).json({ message: "Quantity must be positive" });
+    if (!Number.isInteger(Number(quantity)) || quantity <= 0) {
+      return res.status(400).json({ message: "Quantity must be a positive whole number" });
     }
 
     const allowedStorage = ["room", "refrigerated"];
@@ -70,8 +71,10 @@ exports.createFood = async (req, res) => {
     }
 
     let freshnessScore, predictedExpiry;
+
     try {
-      ({ freshnessScore, predictedExpiry } = calculateFreshness(cookedTime, storageType));
+      ({ freshnessScore, predictedExpiry } =
+        calculateFreshness(cookedTime, storageType));
     } catch (freshnessError) {
       return res.status(400).json({ message: freshnessError.message });
     }
@@ -104,7 +107,7 @@ exports.createFood = async (req, res) => {
 
 
 /* =====================================
-   Get Nearby Food (NGO Only)
+   Get Nearby Food
 ===================================== */
 exports.getNearbyFood = async (req, res) => {
   try {
@@ -122,14 +125,6 @@ exports.getNearbyFood = async (req, res) => {
     }
 
     const [longitude, latitude] = req.user.location.coordinates;
-
-    await Food.updateMany(
-      {
-        status: { $in: ["active", "reserved"] },
-        predictedExpiry: { $lt: new Date() }
-      },
-      { status: "expired" }
-    );
 
     const food = await Food.find({
       status: "active",
@@ -156,11 +151,14 @@ exports.getNearbyFood = async (req, res) => {
 
 
 /* =====================================
-   Reserve Food (NGO Only)
-   Notifies: Restaurant
+   Reserve Food
 ===================================== */
 exports.reserveFood = async (req, res) => {
   try {
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid food ID" });
+    }
 
     if (req.user.role !== "ngo") {
       return res.status(403).json({ message: "Only NGOs can reserve food" });
@@ -186,7 +184,6 @@ exports.reserveFood = async (req, res) => {
       });
     }
 
-    // Notify the restaurant their food was reserved by an NGO
     try {
       getIO()
         .to(food.restaurant._id.toString())
@@ -200,7 +197,7 @@ exports.reserveFood = async (req, res) => {
           timestamp: new Date()
         });
     } catch (socketErr) {
-      console.error("Socket emit error (reserveFood):", socketErr.message);
+      console.error("Socket emit error:", socketErr.message);
     }
 
     res.status(200).json({ message: "Food reserved successfully", food });
@@ -213,50 +210,45 @@ exports.reserveFood = async (req, res) => {
 
 
 /* =====================================
-   Confirm Pickup (Restaurant Only)
-   Notifies: NGO
+   Mark Picked (Atomic)
 ===================================== */
 exports.markPicked = async (req, res) => {
   try {
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid food ID" });
+    }
 
     if (req.user.role !== "restaurant") {
       return res.status(403).json({ message: "Only restaurants can confirm pickup" });
     }
 
-    const food = await Food.findById(req.params.id)
-      .populate("reservedBy", "name email _id");
+    const food = await Food.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        status: "reserved",
+        restaurant: req.user.id
+      },
+      { status: "picked" },
+      { new: true }
+    ).populate("reservedBy", "name email _id");
 
     if (!food) {
-      return res.status(404).json({ message: "Food not found" });
+      return res.status(404).json({ message: "Food not found or not authorized" });
     }
 
-    if (food.status !== "reserved") {
-      return res.status(400).json({ message: "Food must be reserved first" });
-    }
-
-    if (food.restaurant.toString() !== req.user.id) {
-      return res.status(403).json({ message: "Not authorized" });
-    }
-
-    food.status = "picked";
-    await food.save();
-
-    // Notify the NGO that pickup is confirmed — they should now deliver
     if (food.reservedBy) {
       try {
         getIO()
           .to(food.reservedBy._id.toString())
           .emit("food_picked", {
             type: "food_picked",
-            message: `"${food.foodType}" is ready — ${req.user.name} confirmed pickup. Please deliver now!`,
+            message: `"${food.foodType}" is ready — ${req.user.name} confirmed pickup.`,
             foodId: food._id,
-            foodType: food.foodType,
-            quantity: food.quantity,
-            restaurantName: req.user.name,
             timestamp: new Date()
           });
       } catch (socketErr) {
-        console.error("Socket emit error (markPicked):", socketErr.message);
+        console.error("Socket emit error:", socketErr.message);
       }
     }
 
@@ -270,11 +262,14 @@ exports.markPicked = async (req, res) => {
 
 
 /* =====================================
-   Mark Delivered (NGO Only)
-   Notifies: Restaurant
+   Mark Delivered
 ===================================== */
 exports.markDelivered = async (req, res) => {
   try {
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid food ID" });
+    }
 
     if (req.user.role !== "ngo") {
       return res.status(403).json({ message: "Only NGOs allowed" });
@@ -291,28 +286,30 @@ exports.markDelivered = async (req, res) => {
       return res.status(400).json({ message: "Food must be picked first" });
     }
 
+    if (!food.reservedBy) {
+      return res.status(400).json({ message: "This food has no assigned NGO" });
+    }
+
     if (food.reservedBy.toString() !== req.user.id) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
     food.status = "delivered";
     food.deliveredAt = new Date();
+
     await food.save();
 
-    // Notify the restaurant that delivery is complete
     try {
       getIO()
         .to(food.restaurant._id.toString())
         .emit("food_delivered", {
           type: "food_delivered",
-          message: `"${food.foodType}" (${food.quantity} units) has been delivered to beneficiaries`,
+          message: `"${food.foodType}" delivered successfully`,
           foodId: food._id,
-          foodType: food.foodType,
-          quantity: food.quantity,
           timestamp: new Date()
         });
     } catch (socketErr) {
-      console.error("Socket emit error (markDelivered):", socketErr.message);
+      console.error("Socket emit error:", socketErr.message);
     }
 
     res.status(200).json({ message: "Food delivered successfully", food });
@@ -346,6 +343,7 @@ exports.getNGODashboard = async (req, res) => {
       Food.find({ reservedBy: req.user.id, status: "delivered" })
         .populate("restaurant", "name email")
         .sort({ createdAt: -1 })
+        .limit(50)
     ]);
 
     res.status(200).json({ reserved, picked, delivered });
@@ -358,7 +356,7 @@ exports.getNGODashboard = async (req, res) => {
 
 
 /* =====================================
-   Restaurant Dashboard
+   Restaurant Dashboard (Paginated)
 ===================================== */
 exports.getRestaurantDashboard = async (req, res) => {
   try {
@@ -367,9 +365,15 @@ exports.getRestaurantDashboard = async (req, res) => {
       return res.status(403).json({ message: "Only restaurants can access dashboard" });
     }
 
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
     const food = await Food.find({ restaurant: req.user.id })
       .populate("reservedBy", "name email")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     res.status(200).json(food);
 
@@ -378,6 +382,7 @@ exports.getRestaurantDashboard = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
 
 /* =====================================
    Admin Analytics
@@ -389,144 +394,63 @@ exports.getAdminAnalytics = async (req, res) => {
       return res.status(403).json({ message: "Only admins can access analytics" });
     }
 
-    const [
-      totalListings,
-      deliveredCount,
-      expiredCount,
-      activeCount,
-      reservedCount,
-      quantityResult,
-      donationsPerDay,
-      topRestaurants,
-      ngoActivity
-    ] = await Promise.all([
-
-      // Total food listings ever
-      Food.countDocuments(),
-
-      // Total delivered
-      Food.countDocuments({ status: "delivered" }),
-
-      // Total expired
-      Food.countDocuments({ status: "expired" }),
-
-      // Currently active
-      Food.countDocuments({ status: "active" }),
-
-      // Currently reserved
-      Food.countDocuments({ status: "reserved" }),
-
-      // Total quantity redistributed
-      Food.aggregate([
-        { $match: { status: "delivered" } },
-        { $group: { _id: null, total: { $sum: "$quantity" } } }
-      ]),
-
-      // Food donations per day — last 14 days
-      Food.aggregate([
-        {
-          $match: {
-            createdAt: {
-              $gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)
-            }
-          }
-        },
-        {
-          $group: {
-            _id: {
-              $dateToString: { format: "%Y-%m-%d", date: "$createdAt" }
-            },
-            donations: { $sum: 1 },
-            quantity: { $sum: "$quantity" }
-          }
-        },
-        { $sort: { _id: 1 } },
-        {
-          $project: {
-            _id: 0,
-            date: "$_id",
-            donations: 1,
-            quantity: 1
-          }
+    const topRestaurants = await Food.aggregate([
+      { $match: { status: "delivered" } },
+      {
+        $group: {
+          _id: "$restaurant",
+          totalDelivered: { $sum: "$quantity" }
         }
-      ]),
-
-      // Top 5 restaurants by delivered quantity
-      Food.aggregate([
-        { $match: { status: "delivered" } },
-        {
-          $group: {
-            _id: "$restaurant",
-            totalDelivered: { $sum: "$quantity" },
-            totalDonations: { $sum: 1 }
-          }
-        },
-        { $sort: { totalDelivered: -1 } },
-        { $limit: 5 },
-        {
-          $lookup: {
-            from: "users",
-            localField: "_id",
-            foreignField: "_id",
-            as: "restaurantInfo"
-          }
-        },
-        {
-          $project: {
-            _id: 0,
-            restaurantName: { $arrayElemAt: ["$restaurantInfo.name", 0] },
-            totalDelivered: 1,
-            totalDonations: 1
-          }
+      },
+      { $sort: { totalDelivered: -1 } },
+      { $limit: 5 },
+      {
+        $lookup: {
+          from: "users",
+          localField: "_id",
+          foreignField: "_id",
+          as: "restaurantInfo"
         }
-      ]),
-
-      // Top 5 NGOs by deliveries completed
-      Food.aggregate([
-        { $match: { status: "delivered" } },
-        {
-          $group: {
-            _id: "$reservedBy",
-            deliveriesCompleted: { $sum: 1 },
-            quantityDelivered: { $sum: "$quantity" }
-          }
-        },
-        { $sort: { deliveriesCompleted: -1 } },
-        { $limit: 5 },
-        {
-          $lookup: {
-            from: "users",
-            localField: "_id",
-            foreignField: "_id",
-            as: "ngoInfo"
-          }
-        },
-        {
-          $project: {
-            _id: 0,
-            ngoName: { $arrayElemAt: ["$ngoInfo.name", 0] },
-            deliveriesCompleted: 1,
-            quantityDelivered: 1
-          }
+      },
+      {
+        $project: {
+          _id: 0,
+          restaurantName: {
+            $ifNull: [{ $arrayElemAt: ["$restaurantInfo.name", 0] }, "Deleted User"]
+          },
+          totalDelivered: 1
         }
-      ])
-
+      }
     ]);
 
-    res.status(200).json({
-      totalListings,
-      deliveredCount,
-      expiredCount,
-      activeCount,
-      reservedCount,
-      totalQuantityRedistributed: quantityResult[0]?.total || 0,
-      donationsPerDay,
-      topRestaurants,
-      ngoActivity
-    });
+    res.status(200).json({ topRestaurants });
 
   } catch (error) {
     console.error("ADMIN ANALYTICS ERROR:", error);
     res.status(500).json({ message: error.message });
   }
+};
+exports.deleteFood = async (req, res) => {
+
+  const food = await Food.findById(req.params.id);
+
+  if (!food) {
+    return res.status(404).json({ message: "Not found" });
+  }
+
+  if (food.restaurant.toString() !== req.user.id) {
+    return res.status(403).json({ message: "Not authorized" });
+  }
+
+  if (["reserved", "picked"].includes(food.status)) {
+    return res.status(400).json({
+      message: "Cannot delete a reserved or picked listing"
+    });
+  }
+
+  await food.deleteOne();
+
+  res.status(200).json({
+    message: "Listing deleted"
+  });
 };

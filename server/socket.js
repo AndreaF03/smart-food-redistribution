@@ -1,40 +1,71 @@
-let io;
+const { Server } = require("socket.io");
+const jwt = require("jsonwebtoken");
 
-const initSocket = (server) => {
-  const { Server } = require("socket.io");
+let io = null;
 
+const initSocket = (server, clientOrigin) => {
   io = new Server(server, {
     cors: {
-      origin: process.env.NODE_ENV === "production"
-        ? process.env.CLIENT_URL
-        : "http://localhost:3000",
+      origin: clientOrigin,
       methods: ["GET", "POST"],
       credentials: true
     }
   });
 
-  io.on("connection", (socket) => {
-    console.log("Socket connected:", socket.id);
+  /* ==========================
+     AUTH MIDDLEWARE
+  ========================== */
 
-    // Each user joins a room named after their userId
-    // so we can send targeted notifications
-    socket.on("join", (userId) => {
-      socket.join(userId);
-      console.log(`User ${userId} joined their room`);
-    });
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+
+    if (!token) {
+      return next(new Error("Authentication required"));
+    }
+
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      // attach authenticated user to socket
+      socket.userId = decoded.id;
+
+      next();
+    } catch (err) {
+      next(new Error("Invalid token"));
+    }
+  });
+
+  /* ==========================
+     CONNECTION
+  ========================== */
+
+  io.on("connection", (socket) => {
+    console.log(`User ${socket.userId} connected (${socket.id})`);
+
+    // Auto join private notification room
+    socket.join(socket.userId);
 
     socket.on("disconnect", () => {
-      console.log("Socket disconnected:", socket.id);
+      console.log(`User ${socket.userId} disconnected`);
     });
   });
 
   return io;
 };
 
-// Call this from controllers to send notifications
+/* ==========================
+   SAFE ACCESSOR
+========================== */
+
 const getIO = () => {
-  if (!io) throw new Error("Socket.io not initialized");
+  if (!io) {
+    console.warn("Socket.io not initialized — skipping emit");
+    return null;
+  }
   return io;
 };
 
-module.exports = { initSocket, getIO };
+module.exports = {
+  initSocket,
+  getIO
+};

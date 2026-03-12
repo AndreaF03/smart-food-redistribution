@@ -20,21 +20,39 @@ exports.createDonation = async (req, res) => {
       });
     }
 
-    if (new Date(expiryTime) <= new Date()) {
+    /* Validate quantity */
+    const parsedQty = Number(quantity);
+
+    if (!Number.isInteger(parsedQty) || parsedQty < 1) {
+      return res.status(400).json({
+        message: "Quantity must be a positive whole number"
+      });
+    }
+
+    /* Validate expiry date */
+    const expiry = new Date(expiryTime);
+
+    if (isNaN(expiry.getTime())) {
+      return res.status(400).json({
+        message: "Invalid expiry time format"
+      });
+    }
+
+    if (expiry <= new Date()) {
       return res.status(400).json({
         message: "Expiry time must be in the future"
       });
     }
 
-    /* ⭐ NEW: Get uploaded image */
-    const image = req.file ? req.file.filename : null;
+    /* Standardized image path */
+    const image = req.file?.path || null;
 
     const donation = await Donation.create({
       restaurant: req.user.id,
       foodName,
-      quantity,
+      quantity: parsedQty,
       pickupLocation,
-      expiryTime,
+      expiryTime: expiry,
       image
     });
 
@@ -60,8 +78,9 @@ exports.createDonation = async (req, res) => {
 exports.getDonations = async (req, res) => {
   try {
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const page  = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
+
     const skip = (page - 1) * limit;
 
     const filter = {
@@ -96,7 +115,7 @@ exports.getDonations = async (req, res) => {
 
 
 /* ==============================
-   Get My Donations (Restaurant)
+   Get My Donations
 ================================ */
 exports.getMyDonations = async (req, res) => {
   try {
@@ -109,7 +128,9 @@ exports.getMyDonations = async (req, res) => {
 
     const donations = await Donation.find({
       restaurant: req.user.id
-    }).sort({ createdAt: -1 });
+    })
+      .sort({ createdAt: -1 })
+      .limit(50);
 
     res.status(200).json({ donations });
 
@@ -141,6 +162,12 @@ exports.deleteDonation = async (req, res) => {
     if (donation.restaurant.toString() !== req.user.id) {
       return res.status(403).json({
         message: "Not authorized to delete this donation"
+      });
+    }
+
+    if (["reserved", "picked"].includes(donation.status)) {
+      return res.status(400).json({
+        message: "Cannot delete a donation that is already reserved or picked up"
       });
     }
 
