@@ -81,7 +81,10 @@ const foodSchema = new mongoose.Schema({
 
     deliveredAt: {
         type: Date
-    }
+    },
+    image: {
+  type: String
+}
 
 }, { timestamps: true });
 

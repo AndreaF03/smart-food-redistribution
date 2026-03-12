@@ -71,13 +71,14 @@ exports.createFood = async (req, res) => {
         } catch (freshnessError) {
             return res.status(400).json({ message: freshnessError.message });
         }
-
+        const image = req.file?.path || "";
         const food = await Food.create({
             restaurant: req.user.id,
             foodType,
             quantity,
             cookedTime,
             storageType,
+            image,
             freshnessScore,
             predictedExpiry,
             location: req.user.location,
@@ -178,15 +179,14 @@ exports.reserveFood = async (req, res) => {
     }
 };
 
-
 /* =====================================
-   Mark Picked (NGO confirms pickup)
+   Confirm Pickup (Restaurant confirms NGO picked food)
 ===================================== */
 exports.markPicked = async (req, res) => {
     try {
-        // Fixed: NGO picks up food, not restaurant
-        if (req.user.role !== "ngo") {
-            return res.status(403).json({ message: "Only NGOs can confirm pickup" });
+
+        if (req.user.role !== "restaurant") {
+            return res.status(403).json({ message: "Only restaurants can confirm pickup" });
         }
 
         const food = await Food.findById(req.params.id);
@@ -199,22 +199,25 @@ exports.markPicked = async (req, res) => {
             return res.status(400).json({ message: "Food must be reserved first" });
         }
 
-        // Ensure only the NGO who reserved it can mark it picked
-        if (food.reservedBy.toString() !== req.user.id) {
+        // Ensure the restaurant confirming is the owner
+        if (food.restaurant.toString() !== req.user.id) {
             return res.status(403).json({ message: "Not authorized" });
         }
 
         food.status = "picked";
+
         await food.save();
 
-        res.status(200).json({ message: "Food marked as picked", food });
+        res.status(200).json({
+            message: "Pickup confirmed by restaurant",
+            food
+        });
 
     } catch (error) {
         console.error("MARK PICKED ERROR:", error);
         res.status(500).json({ message: error.message });
     }
 };
-
 
 /* =====================================
    Mark Delivered (NGO Only)

@@ -4,8 +4,14 @@ import { useNavigate } from "react-router-dom";
 
 function NGODashboard() {
 
+  const navigate = useNavigate();
+
   const [nearbyFood, setNearbyFood] = useState([]);
-  const [myFood, setMyFood] = useState({ reserved: [], delivered: [] });
+  const [myFood, setMyFood] = useState({
+    reserved: [],
+    picked: [],
+    delivered: []
+  });
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -16,7 +22,9 @@ function NGODashboard() {
   const [activeTab, setActiveTab] = useState("nearby");
   const [actionLoading, setActionLoading] = useState({});
 
-  const navigate = useNavigate();
+  /* ==========================
+     Fetch Dashboard Data
+  ========================== */
 
   const fetchData = useCallback(async (silent = false) => {
 
@@ -39,7 +47,7 @@ function NGODashboard() {
       ]);
 
       setNearbyFood(nearbyRes.data || []);
-      setMyFood(myRes.data || { reserved: [], delivered: [] });
+      setMyFood(myRes.data || { reserved: [], picked: [], delivered: [] });
 
     } catch (err) {
 
@@ -49,7 +57,7 @@ function NGODashboard() {
         return;
       }
 
-      setError("Failed to load data. Please try again.");
+      setError("Failed to load dashboard data");
 
     } finally {
 
@@ -64,25 +72,25 @@ function NGODashboard() {
     fetchData();
   }, [fetchData]);
 
+  /* ==========================
+     Action Loader Helper
+  ========================== */
+
   const withActionLoading = async (id, fn) => {
 
-    setActionLoading(prev => ({
-      ...prev,
-      [id]: true
-    }));
+    setActionLoading(prev => ({ ...prev, [id]: true }));
 
     try {
       await fn();
     } finally {
-
-      setActionLoading(prev => ({
-        ...prev,
-        [id]: false
-      }));
-
+      setActionLoading(prev => ({ ...prev, [id]: false }));
     }
 
   };
+
+  /* ==========================
+     Reserve Food
+  ========================== */
 
   const reserveFood = (id) => withActionLoading(id, async () => {
 
@@ -90,24 +98,27 @@ function NGODashboard() {
 
     try {
 
-      setSuccess("");
       setError("");
+      setSuccess("");
 
       await axios.patch(`/food/reserve/${id}`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
       setSuccess("Food reserved successfully ✅");
-
       fetchData(true);
 
     } catch (err) {
 
-      setError(err.response?.data?.message || "Reservation failed.");
+      setError(err.response?.data?.message || "Reservation failed");
 
     }
 
   });
+
+  /* ==========================
+     Mark Delivered
+  ========================== */
 
   const markDelivered = (id) => withActionLoading(id, async () => {
 
@@ -115,20 +126,19 @@ function NGODashboard() {
 
     try {
 
-      setSuccess("");
       setError("");
+      setSuccess("");
 
       await axios.patch(`/food/deliver/${id}`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      setSuccess("Delivery confirmed successfully ✅");
-
+      setSuccess("Food delivered successfully ✅");
       fetchData(true);
 
     } catch (err) {
 
-      setError(err.response?.data?.message || "Delivery failed.");
+      setError(err.response?.data?.message || "Delivery failed");
 
     }
 
@@ -139,82 +149,39 @@ function NGODashboard() {
     navigate("/login");
   };
 
-  const totalActive = myFood.reserved.length;
-
   const tabs = [
-    { id: "nearby", label: "Available", icon: "📍", count: nearbyFood.length },
-    { id: "reserved", label: "Reserved", icon: "📦", count: myFood.reserved.length },
-    { id: "delivered", label: "Delivered", icon: "✅", count: myFood.delivered.length }
+    { id: "nearby", label: "Available", count: nearbyFood.length },
+    { id: "reserved", label: "Reserved", count: myFood.reserved.length },
+    { id: "picked", label: "Ready for Delivery", count: myFood.picked.length },
+    { id: "delivered", label: "Delivered", count: myFood.delivered.length }
   ];
 
-  if (loading) return (
-
-    <div style={{
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      minHeight: "100vh"
-    }}>
-
-      <div style={{
-        width: 32,
-        height: 32,
-        border: "3px solid #e2e8f0",
-        borderTopColor: "#16a34a",
-        borderRadius: "50%",
-        animation: "spin 0.7s linear infinite"
-      }} />
-
-      <p style={{
-        color: "#64748b",
-        marginTop: 16
-      }}>
-        Loading dashboard…
-      </p>
-
-    </div>
-
-  );
+  if (loading) {
+    return (
+      <div style={{ padding: 40 }}>
+        Loading NGO dashboard...
+      </div>
+    );
+  }
 
   return (
 
-    <div className="dashboard">
+    <div style={{ padding: 30, maxWidth: 1000, margin: "auto" }}>
 
       {/* HEADER */}
 
-      <div className="header">
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
 
-        <div className="header-left">
+        <h2>NGO Dashboard</h2>
 
-          <div className="header-logo">🌱</div>
+        <div>
 
-          <div>
-
-            <h2>NGO Dashboard</h2>
-            <div className="header-subtitle">
-              Smart Food Redistribution
-            </div>
-
-          </div>
-
-        </div>
-
-        <div className="header-actions">
-
-          <button
-            className="btn btn-ghost btn-icon"
-            onClick={() => fetchData(true)}
-            disabled={refreshing}
-          >
-            ↻
+          <button onClick={() => fetchData(true)}>
+            {refreshing ? "Refreshing..." : "Refresh"}
           </button>
 
-          <button
-            className="btn btn-danger btn-sm"
-            onClick={logout}
-          >
-            ⎋ Logout
+          <button onClick={logout} style={{ marginLeft: 10 }}>
+            Logout
           </button>
 
         </div>
@@ -223,110 +190,59 @@ function NGODashboard() {
 
       {/* ALERTS */}
 
-      {error && (
-
-        <div className="alert alert-error">
-          ⚠ {error}
-        </div>
-
-      )}
-
-      {success && (
-
-        <div className="alert alert-success">
-          {success}
-        </div>
-
-      )}
-
-      {/* STATS */}
-
-      <div className="stats-bar">
-
-        <div className="stat-card">
-          <div className="stat-number">{nearbyFood.length}</div>
-          <div className="stat-label">Available Nearby</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-number">{totalActive}</div>
-          <div className="stat-label">Active Claims</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-number">{myFood.delivered.length}</div>
-          <div className="stat-label">Delivered Total</div>
-        </div>
-
-      </div>
+      {error && <p style={{ color: "red" }}>{error}</p>}
+      {success && <p style={{ color: "green" }}>{success}</p>}
 
       {/* TABS */}
 
-      <div className="tabs">
+      <div style={{ marginTop: 20 }}>
 
         {tabs.map(tab => (
 
           <button
             key={tab.id}
-            className={`tab-btn${activeTab === tab.id ? " active" : ""}`}
             onClick={() => setActiveTab(tab.id)}
+            style={{
+              marginRight: 10,
+              padding: "6px 14px",
+              background: activeTab === tab.id ? "#16a34a" : "#eee",
+              color: activeTab === tab.id ? "white" : "black"
+            }}
           >
-
-            <span>{tab.icon}</span>
-            <span>{tab.label}</span>
-            <span className="tab-count">{tab.count}</span>
-
+            {tab.label} ({tab.count})
           </button>
 
         ))}
 
       </div>
 
-      {/* AVAILABLE */}
+      {/* AVAILABLE FOOD */}
 
       {activeTab === "nearby" && (
 
-        <div className="cards-grid">
+        <div style={{ marginTop: 20 }}>
+
+          {nearbyFood.length === 0 && (
+            <p style={{ color: "#777" }}>
+              No food available nearby right now.
+            </p>
+          )}
 
           {nearbyFood.map(item => (
 
-            <div key={item._id} className="card">
+            <div key={item._id} style={cardStyle}>
 
-              <div className="card-header">
+              <h4>{item.foodType}</h4>
 
-                <div className="card-title">
-                  {item.foodType}
-                </div>
+              <p>Quantity: {item.quantity}</p>
+              <p>Restaurant: {item.restaurant?.name}</p>
 
-              </div>
-
-              <div className="card-meta">
-
-                <span className="meta-pill">
-                  📦 {item.quantity} units
-                </span>
-
-                <span className="meta-pill">
-                  🏪 {item.restaurant?.name || "Unknown"}
-                </span>
-
-              </div>
-
-              <div className="card-actions">
-
-                <button
-                  className="btn btn-primary"
-                  onClick={() => reserveFood(item._id)}
-                  disabled={!!actionLoading[item._id]}
-                >
-
-                  {actionLoading[item._id]
-                    ? "Reserving..."
-                    : "Reserve Food"}
-
-                </button>
-
-              </div>
+              <button
+                onClick={() => reserveFood(item._id)}
+                disabled={actionLoading[item._id]}
+              >
+                {actionLoading[item._id] ? "Reserving..." : "Reserve Food"}
+              </button>
 
             </div>
 
@@ -340,42 +256,63 @@ function NGODashboard() {
 
       {activeTab === "reserved" && (
 
-        <div className="cards-grid">
+        <div style={{ marginTop: 20 }}>
+
+          {myFood.reserved.length === 0 && (
+            <p style={{ color: "#777" }}>
+              No reserved food yet.
+            </p>
+          )}
 
           {myFood.reserved.map(item => (
 
-            <div key={item._id} className="card">
+            <div key={item._id} style={cardStyle}>
 
-              <div className="card-title">
-                {item.foodType}
-              </div>
+              <h4>{item.foodType}</h4>
 
-              <div className="card-meta">
+              <p>Quantity: {item.quantity}</p>
+              <p>Restaurant: {item.restaurant?.name}</p>
 
-                <span className="meta-pill">
-                  📦 {item.quantity}
-                </span>
-
-                <span className="meta-pill">
-                  🏪 {item.restaurant?.name}
-                </span>
-
-              </div>
-
-              <p>
-                Waiting for delivery
+              <p style={{ color: "#f59e0b" }}>
+                Waiting for restaurant pickup confirmation
               </p>
 
-              <button
-                className="btn btn-action"
-                onClick={() => markDelivered(item._id)}
-                disabled={!!actionLoading[item._id]}
-              >
+            </div>
 
+          ))}
+
+        </div>
+
+      )}
+
+      {/* PICKED */}
+
+      {activeTab === "picked" && (
+
+        <div style={{ marginTop: 20 }}>
+
+          {myFood.picked.length === 0 && (
+            <p style={{ color: "#777" }}>
+              No food ready for delivery yet.
+            </p>
+          )}
+
+          {myFood.picked.map(item => (
+
+            <div key={item._id} style={cardStyle}>
+
+              <h4>{item.foodType}</h4>
+
+              <p>Quantity: {item.quantity}</p>
+              <p>Restaurant: {item.restaurant?.name}</p>
+
+              <button
+                onClick={() => markDelivered(item._id)}
+                disabled={actionLoading[item._id]}
+              >
                 {actionLoading[item._id]
                   ? "Confirming..."
-                  : "Confirm Delivery"}
-
+                  : "Mark Delivered"}
               </button>
 
             </div>
@@ -390,27 +327,22 @@ function NGODashboard() {
 
       {activeTab === "delivered" && (
 
-        <div className="cards-grid">
+        <div style={{ marginTop: 20 }}>
+
+          {myFood.delivered.length === 0 && (
+            <p style={{ color: "#777" }}>
+              No deliveries completed yet.
+            </p>
+          )}
 
           {myFood.delivered.map(item => (
 
-            <div key={item._id} className="card faded">
+            <div key={item._id} style={{ ...cardStyle, opacity: 0.7 }}>
 
-              <div className="card-title">
-                {item.foodType}
-              </div>
+              <h4>{item.foodType}</h4>
 
-              <div className="card-meta">
-
-                <span className="meta-pill">
-                  📦 {item.quantity}
-                </span>
-
-                <span className="meta-pill">
-                  🏪 {item.restaurant?.name}
-                </span>
-
-              </div>
+              <p>Quantity: {item.quantity}</p>
+              <p>Restaurant: {item.restaurant?.name}</p>
 
             </div>
 
@@ -425,5 +357,13 @@ function NGODashboard() {
   );
 
 }
+
+const cardStyle = {
+  border: "1px solid #ddd",
+  padding: 15,
+  borderRadius: 8,
+  marginBottom: 10,
+  background: "#fafafa"
+};
 
 export default NGODashboard;

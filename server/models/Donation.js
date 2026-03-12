@@ -15,61 +15,61 @@ const donationSchema = new mongoose.Schema(
       maxlength: [100, "Food name cannot exceed 100 characters"]
     },
 
-    // Fixed: Number instead of String
     quantity: {
       type: Number,
       required: [true, "Quantity is required"],
       min: [1, "Quantity must be at least 1"]
     },
 
-    // Fixed: GeoJSON for geospatial support
     pickupLocation: {
-      type: {
-        type: String,
-        enum: ["Point"],
-        default: "Point"
-      },
-      coordinates: {
-        type: [Number],
-        required: [true, "Pickup coordinates are required"]
-      },
-      address: {
-        type: String,
-        trim: true
-      }
+      type: String,
+      required: [true, "Pickup location is required"],
+      trim: true
     },
 
-    // Fixed: required at schema level
     expiryTime: {
       type: Date,
       required: [true, "Expiry time is required"]
     },
 
+    image: {
+      type: String,
+      default: null
+    },
+
     status: {
       type: String,
-      // Fixed: added "delivered" and "expired"
       enum: ["available", "reserved", "picked", "delivered", "expired"],
       default: "available"
     },
 
     claimedBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User"
+      ref: "User",
+      default: null
     }
-
   },
   {
     timestamps: true
   }
 );
 
-// 2dsphere index for geospatial queries on pickupLocation
-donationSchema.index({ pickupLocation: "2dsphere" });
+/* =============================
+   Indexes
+============================= */
 
-// Index for efficient status filtering
 donationSchema.index({ status: 1 });
-
-// Index for restaurant lookups
 donationSchema.index({ restaurant: 1 });
+donationSchema.index({ createdAt: -1 });
+
+/* =============================
+   Auto mark expired donations
+============================= */
+
+donationSchema.pre("save", function () {
+  if (this.expiryTime && this.expiryTime < new Date()) {
+    this.status = "expired";
+  }
+});
 
 module.exports = mongoose.model("Donation", donationSchema);

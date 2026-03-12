@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const rateLimit = require("express-rate-limit");
+const multer = require("multer");
 
 const {
   createDonation,
@@ -11,10 +12,25 @@ const {
 
 const { protect, authorizeRoles } = require("../middleware/authMiddleware");
 
+/* =====================================
+   Multer Config (Image Upload)
+===================================== */
 
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, "uploads/");
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + "-" + file.originalname);
+  }
+});
 
+const upload = multer({ storage });
 
-// Rate limiter for donation creation
+/* =====================================
+   Rate limiter
+===================================== */
+
 const createLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
@@ -26,17 +42,20 @@ const createLimiter = rateLimit({
 /* =====================================
    Create Donation (Restaurant only)
 ===================================== */
+
 router.post(
   "/",
   createLimiter,
   protect,
   authorizeRoles("restaurant"),
+  upload.single("image"), // ✅ IMPORTANT FIX
   createDonation
 );
 
 /* =====================================
    Get All Donations (NGO + Admin)
 ===================================== */
+
 router.get(
   "/",
   protect,
@@ -47,6 +66,7 @@ router.get(
 /* =====================================
    Get My Donations (Restaurant only)
 ===================================== */
+
 router.get(
   "/my",
   protect,
@@ -57,6 +77,7 @@ router.get(
 /* =====================================
    Delete Donation (Restaurant only)
 ===================================== */
+
 router.delete(
   "/:id",
   protect,

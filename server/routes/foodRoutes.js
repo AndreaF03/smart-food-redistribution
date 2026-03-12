@@ -1,8 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const rateLimit = require("express-rate-limit");
-
-
+const upload = require("../middleware/uploadMiddleware");
 const {
   createFood,
   getNearbyFood,
@@ -14,12 +13,11 @@ const {
   getAdminAnalytics
 } = require("../controllers/foodController");
 
-// Fixed: import authorizeRoles too
 const { protect, authorizeRoles } = require("../middleware/authMiddleware");
 
-
-
-// Rate limiter for food creation
+/* =====================================
+   Rate limiter for food creation
+===================================== */
 const createLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
@@ -36,6 +34,7 @@ router.post(
   createLimiter,
   protect,
   authorizeRoles("restaurant"),
+  upload.single("image"),
   createFood
 );
 
@@ -51,7 +50,6 @@ router.get(
 
 /* =====================================
    Reserve Food (NGO only)
-   Fixed: PUT -> PATCH (partial update)
 ===================================== */
 router.patch(
   "/reserve/:id",
@@ -61,19 +59,18 @@ router.patch(
 );
 
 /* =====================================
-   Mark Picked (NGO only)
-   Fixed: PUT -> PATCH (partial update)
+   Confirm Pickup (Restaurant only)
+   Restaurant confirms NGO picked food
 ===================================== */
 router.patch(
   "/pick/:id",
   protect,
-  authorizeRoles("ngo"),
+  authorizeRoles("restaurant"),
   markPicked
 );
 
 /* =====================================
    Mark Delivered (NGO only)
-   Fixed: PUT -> PATCH (partial update)
 ===================================== */
 router.patch(
   "/deliver/:id",

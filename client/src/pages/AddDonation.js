@@ -10,6 +10,7 @@ function AddDonation() {
   const [quantity, setQuantity] = useState("");
   const [pickupLocation, setPickupLocation] = useState("");
   const [expiryTime, setExpiryTime] = useState("");
+  const [image, setImage] = useState(null); // ✅ added image state
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -20,7 +21,6 @@ function AddDonation() {
     setError("");
     setSuccess("");
 
-    // Client-side expiry validation
     if (new Date(expiryTime) <= new Date()) {
       setError("Expiry time must be in the future");
       return;
@@ -29,12 +29,20 @@ function AddDonation() {
     try {
       setLoading(true);
 
-      // Fixed: correct endpoint /donations, quantity cast to Number
-      await axios.post("/donations", {
-        foodName,
-        quantity: Number(quantity),
-        pickupLocation,
-        expiryTime
+      const formData = new FormData();
+      formData.append("foodName", foodName);
+      formData.append("quantity", Number(quantity));
+      formData.append("pickupLocation", pickupLocation);
+      formData.append("expiryTime", expiryTime);
+
+      if (image) {
+        formData.append("image", image);
+      }
+
+      await axios.post("/donations", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data"
+        }
       });
 
       setSuccess("Donation added successfully ✅");
@@ -43,6 +51,7 @@ function AddDonation() {
       setQuantity("");
       setPickupLocation("");
       setExpiryTime("");
+      setImage(null);
 
       setTimeout(() => navigate("/restaurant"), 1500);
 
@@ -61,7 +70,6 @@ function AddDonation() {
 
       <h2>Add Food Donation</h2>
 
-      {/* Inline feedback instead of alert() */}
       {error && <p style={styles.error}>{error}</p>}
       {success && <p style={styles.success}>{success}</p>}
 
@@ -75,7 +83,6 @@ function AddDonation() {
           onChange={(e) => setFoodName(e.target.value)}
         />
 
-        {/* Fixed: min=1 to prevent 0 or negative */}
         <input
           type="number"
           placeholder="Quantity"
@@ -93,12 +100,18 @@ function AddDonation() {
           onChange={(e) => setPickupLocation(e.target.value)}
         />
 
-        {/* Fixed: added required */}
         <input
           type="datetime-local"
           required
           value={expiryTime}
           onChange={(e) => setExpiryTime(e.target.value)}
+        />
+
+        {/* ✅ Fixed image upload */}
+        <input
+          type="file"
+          accept="image/*"
+          onChange={(e) => setImage(e.target.files[0])}
         />
 
         <button type="submit" disabled={loading}>

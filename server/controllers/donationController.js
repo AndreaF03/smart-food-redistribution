@@ -6,7 +6,6 @@ const Donation = require("../models/Donation");
 exports.createDonation = async (req, res) => {
   try {
 
-    // Role guard — only restaurants can donate
     if (req.user.role !== "restaurant") {
       return res.status(403).json({
         message: "Only restaurants can create donations"
@@ -15,26 +14,28 @@ exports.createDonation = async (req, res) => {
 
     const { foodName, quantity, pickupLocation, expiryTime } = req.body;
 
-    // Validate all required fields including expiryTime
     if (!foodName || !quantity || !pickupLocation || !expiryTime) {
       return res.status(400).json({
         message: "Please fill all required fields"
       });
     }
 
-    // Ensure expiryTime is not in the past
     if (new Date(expiryTime) <= new Date()) {
       return res.status(400).json({
         message: "Expiry time must be in the future"
       });
     }
 
+    /* ⭐ NEW: Get uploaded image */
+    const image = req.file ? req.file.filename : null;
+
     const donation = await Donation.create({
       restaurant: req.user.id,
       foodName,
       quantity,
       pickupLocation,
-      expiryTime
+      expiryTime,
+      image
     });
 
     res.status(201).json({
@@ -59,12 +60,10 @@ exports.createDonation = async (req, res) => {
 exports.getDonations = async (req, res) => {
   try {
 
-    // Pagination
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    // Only return available, non-expired donations
     const filter = {
       status: "available",
       expiryTime: { $gt: new Date() }
@@ -108,8 +107,9 @@ exports.getMyDonations = async (req, res) => {
       });
     }
 
-    const donations = await Donation.find({ restaurant: req.user.id })
-      .sort({ createdAt: -1 });
+    const donations = await Donation.find({
+      restaurant: req.user.id
+    }).sort({ createdAt: -1 });
 
     res.status(200).json({ donations });
 
@@ -138,7 +138,6 @@ exports.deleteDonation = async (req, res) => {
       });
     }
 
-    // Only the owning restaurant can delete
     if (donation.restaurant.toString() !== req.user.id) {
       return res.status(403).json({
         message: "Not authorized to delete this donation"
