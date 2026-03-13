@@ -2,52 +2,124 @@ import {
   BrowserRouter as Router,
   Routes,
   Route,
-  Navigate
+  Navigate,
+  Link,
+  useNavigate
 } from "react-router-dom";
+
+import { lazy, Suspense, useEffect } from "react";
+import { jwtDecode } from "jwt-decode";
 
 import Register from "./pages/Register";
 import Login from "./pages/Login";
-import RestaurantDashboard from "./pages/RestaurantDashboard";
-import NGODashboard from "./pages/NGODashboard";
-import AdminDashboard from "./pages/AdminDashboard";
-import AddDonation from "./pages/AddDonation";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 /* ==========================
-   Simple fallback pages
+   Lazy-loaded dashboards
+========================== */
+const RestaurantDashboard = lazy(() => import("./pages/RestaurantDashboard"));
+const NGODashboard = lazy(() => import("./pages/NGODashboard"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
+const AddDonation = lazy(() => import("./pages/AddDonation"));
+
+/* ==========================
+   PublicRoute
+   Prevent logged-in users
+   from seeing login/register
+========================== */
+const PublicRoute = ({ children }) => {
+  const token = localStorage.getItem("token");
+
+  if (token) {
+    try {
+      const { role, exp } = jwtDecode(token);
+
+      if (exp * 1000 > Date.now()) {
+        return <Navigate to={`/${role}`} replace />;
+      }
+    } catch {
+      localStorage.clear();
+    }
+  }
+
+  return children;
+};
+
+/* ==========================
+   Unauthorized Page
 ========================== */
 const Unauthorized = () => (
   <div style={{ textAlign: "center", marginTop: "100px" }}>
     <h2>403 — Access Denied</h2>
     <p>You don't have permission to view this page.</p>
-    <a href="/login">Back to Login</a>
+    <Link to="/login">Back to Login</Link>
   </div>
 );
 
+/* ==========================
+   404 Page
+========================== */
 const NotFound = () => (
   <div style={{ textAlign: "center", marginTop: "100px" }}>
     <h2>404 — Page Not Found</h2>
     <p>The page you're looking for doesn't exist.</p>
-    <a href="/login">Back to Login</a>
+    <Link to="/login">Back to Login</Link>
   </div>
 );
 
-function App() {
+/* ==========================
+   Main App Component
+========================== */
+function AppRoutes() {
+  const navigate = useNavigate();
+
+  /* Listen for axios auth logout events */
+  useEffect(() => {
+    const handleLogout = () => {
+      navigate("/login", { replace: true });
+    };
+
+    window.addEventListener("auth:logout", handleLogout);
+
+    return () => window.removeEventListener("auth:logout", handleLogout);
+  }, [navigate]);
+
   return (
-    <Router>
+    <Suspense
+      fallback={
+        <div style={{ textAlign: "center", marginTop: "100px" }}>
+          Loading...
+        </div>
+      }
+    >
       <Routes>
 
         {/* Default Route */}
         <Route path="/" element={<Navigate to="/login" replace />} />
 
         {/* Public Routes */}
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
+        <Route
+          path="/login"
+          element={
+            <PublicRoute>
+              <Login />
+            </PublicRoute>
+          }
+        />
 
-        {/* Fixed: unauthorized page for wrong-role redirects */}
+        <Route
+          path="/register"
+          element={
+            <PublicRoute>
+              <Register />
+            </PublicRoute>
+          }
+        />
+
+        {/* Unauthorized */}
         <Route path="/unauthorized" element={<Unauthorized />} />
 
-        {/* Restaurant Routes */}
+        {/* Restaurant */}
         <Route
           path="/restaurant"
           element={
@@ -66,7 +138,7 @@ function App() {
           }
         />
 
-        {/* NGO Dashboard */}
+        {/* NGO */}
         <Route
           path="/ngo"
           element={
@@ -76,7 +148,7 @@ function App() {
           }
         />
 
-        {/* Admin Dashboard */}
+        {/* Admin */}
         <Route
           path="/admin"
           element={
@@ -86,10 +158,21 @@ function App() {
           }
         />
 
-        {/* Fixed: 404 page instead of silent redirect to /login */}
+        {/* 404 */}
         <Route path="*" element={<NotFound />} />
 
       </Routes>
+    </Suspense>
+  );
+}
+
+/* ==========================
+   Root Router
+========================== */
+function App() {
+  return (
+    <Router>
+      <AppRoutes />
     </Router>
   );
 }

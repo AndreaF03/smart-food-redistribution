@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import axios from "../api/axios";
 import { useNavigate } from "react-router-dom";
 import {
@@ -9,152 +9,224 @@ import {
   PieChart, Pie, Cell
 } from "recharts";
 
+/* ============================================================
+   MODULE-LEVEL CONSTANTS & HELPERS
+   (outside component — not recreated on every render)
+============================================================ */
+
+const PIE_COLORS = ["#16a34a", "#2563eb", "#ca8a04", "#dc2626", "#94a3b8"];
+
+const fmtDate = (dateStr) => {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString("en-IN", { month: "short", day: "numeric" });
+};
+
+// FIX #4 & #5: Tooltip components moved to module level
+// — no longer remounted on every render
+const CustomTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{
+      background: "#fff", border: "1px solid #e2e8f0",
+      borderRadius: 10, padding: "10px 14px",
+      boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+      fontFamily: "DM Sans, sans-serif"
+    }}>
+      <p style={{ fontWeight: 600, color: "#0f172a", marginBottom: 6, fontSize: 13 }}>
+        {fmtDate(label)}
+      </p>
+      {payload.map((p, i) => (
+        <p key={i} style={{ color: p.color, fontSize: 13, margin: "2px 0" }}>
+          {p.name}: <strong>{p.value}</strong>
+        </p>
+      ))}
+    </div>
+  );
+};
+
+const BarTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{
+      background: "#fff", border: "1px solid #e2e8f0",
+      borderRadius: 10, padding: "10px 14px",
+      boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+      fontFamily: "DM Sans, sans-serif"
+    }}>
+      <p style={{ fontWeight: 600, color: "#0f172a", marginBottom: 6, fontSize: 13 }}>
+        {label}
+      </p>
+      {payload.map((p, i) => (
+        <p key={i} style={{ color: p.color, fontSize: 13, margin: "2px 0" }}>
+          {p.name}: <strong>{p.value}</strong>
+        </p>
+      ))}
+    </div>
+  );
+};
+
+/* ============================================================
+   COMPONENT
+============================================================ */
+
 function AdminDashboard() {
 
-  const navigate  = useNavigate();
-  const [analytics, setAnalytics] = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState("");
-  const [activeChart, setActiveChart] = useState("donations"); // "donations" | "quantity"
+  const navigate = useNavigate();
 
-  /* ==========================
-     Fetch Analytics
-  ========================== */
-  const fetchAnalytics = useCallback(async () => {
-    const token = localStorage.getItem("token");
-    try {
+  const [analytics, setAnalytics]     = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [refreshing, setRefreshing]   = useState(false); // FIX #13: soft refresh
+  const [error, setError]             = useState("");
+  const [activeChart, setActiveChart] = useState("donations");
+
+  const pollRef = useRef(null);
+
+  /* ----------------------------------------------------------
+     FIX #11: Apply body background via useEffect, not inline
+     <style> tag — cleans up on unmount
+  ---------------------------------------------------------- */
+  useEffect(() => {
+    const prev = document.body.style.background;
+    document.body.style.background = "#f1f5f9";
+    return () => { document.body.style.background = prev; };
+  }, []);
+
+  /* ----------------------------------------------------------
+     FIX #1: No manual Authorization header — axios interceptor
+             handles it automatically.
+     FIX #2: No duplicate 401 handling — interceptor handles it.
+     FIX #13: Soft refresh (keeps stale data visible) vs hard
+              load (first mount, shows spinner).
+  ---------------------------------------------------------- */
+  const fetchAnalytics = useCallback(async (soft = false) => {
+    if (soft) {
+      setRefreshing(true);
+    } else {
       setLoading(true);
-      setError("");
-      const res = await axios.get("/food/admin/analytics", {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+    }
+    setError("");
+
+    try {
+      const res = await axios.get("/food/admin/analytics");
       setAnalytics(res.data);
     } catch (err) {
-      if (err.response?.status === 401) { localStorage.clear(); navigate("/login"); return; }
-      setError("Failed to load analytics. Please try again.");
+      // FIX #2: Interceptor handles 401 — only handle other errors here
+      if (err.response?.status !== 401) {
+        setError("Failed to load analytics. Please try again.");
+      }
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
+  }, []);
+
+  /* ----------------------------------------------------------
+     FIX #10: Auto-refresh every 60 seconds
+  ---------------------------------------------------------- */
+  useEffect(() => {
+    fetchAnalytics(false);
+    pollRef.current = setInterval(() => fetchAnalytics(true), 60 * 1000);
+    return () => clearInterval(pollRef.current);
+  }, [fetchAnalytics]);
+
+  /* ----------------------------------------------------------
+     FIX #9: logout wrapped in useCallback
+  ---------------------------------------------------------- */
+  const logout = useCallback(() => {
+    clearInterval(pollRef.current);
+    localStorage.clear();
+    navigate("/login");
   }, [navigate]);
 
-  useEffect(() => { fetchAnalytics(); }, [fetchAnalytics]);
+  /* ----------------------------------------------------------
+     FIX #7: Memoized derived values — not recalculated every render
+  ---------------------------------------------------------- */
+  const statusPieData = useMemo(() => {
+    if (!analytics) return [];
+    return [
+      { name: "Active",    value: analytics.activeCount    || 0 },
+      { name: "Reserved",  value: analytics.reservedCount  || 0 },
+      { name: "Delivered", value: analytics.deliveredCount || 0 },
+      { name: "Expired",   value: analytics.expiredCount   || 0 },
+    ].filter(d => d.value > 0);
+  }, [analytics]);
 
-  const logout = () => { localStorage.clear(); navigate("/login"); };
+  const deliveryRate = useMemo(() => (
+    analytics?.totalListings
+      ? Math.round((analytics.deliveredCount / analytics.totalListings) * 100)
+      : 0
+  ), [analytics]);
 
-  /* ==========================
-     Helpers
-  ========================== */
-  const fmtDate = (dateStr) => {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString("en-IN", { month: "short", day: "numeric" });
-  };
+  const wasteRate = useMemo(() => (
+    analytics?.totalListings
+      ? Math.round((analytics.expiredCount / analytics.totalListings) * 100)
+      : 0
+  ), [analytics]);
 
-  const PIE_COLORS = ["#16a34a", "#2563eb", "#ca8a04", "#dc2626", "#94a3b8"];
-
-  const statusPieData = analytics ? [
-    { name: "Active",    value: analytics.activeCount    || 0 },
-    { name: "Reserved",  value: analytics.reservedCount  || 0 },
-    { name: "Delivered", value: analytics.deliveredCount || 0 },
-    { name: "Expired",   value: analytics.expiredCount   || 0 },
-  ].filter(d => d.value > 0) : [];
-
-  const deliveryRate = analytics?.totalListings
-    ? Math.round((analytics.deliveredCount / analytics.totalListings) * 100)
-    : 0;
-
-  const wasteRate = analytics?.totalListings
-    ? Math.round((analytics.expiredCount / analytics.totalListings) * 100)
-    : 0;
-
-  // Custom tooltip for area/bar charts
-  const CustomTooltip = ({ active, payload, label }) => {
-    if (!active || !payload?.length) return null;
-    return (
-      <div style={{
-        background: "#fff", border: "1px solid #e2e8f0",
-        borderRadius: 10, padding: "10px 14px",
-        boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-        fontFamily: "DM Sans, sans-serif"
-      }}>
-        <p style={{ fontWeight: 600, color: "#0f172a", marginBottom: 6, fontSize: 13 }}>
-          {fmtDate(label)}
-        </p>
-        {payload.map((p, i) => (
-          <p key={i} style={{ color: p.color, fontSize: 13, margin: "2px 0" }}>
-            {p.name}: <strong>{p.value}</strong>
-          </p>
-        ))}
-      </div>
+  /* ----------------------------------------------------------
+     FIX #12: Fill missing dates so chart has no misleading gaps
+  ---------------------------------------------------------- */
+  const filledDonationsPerDay = useMemo(() => {
+    if (!analytics?.donationsPerDay) return [];
+    const map = Object.fromEntries(
+      analytics.donationsPerDay.map(d => [d.date, d])
     );
-  };
+    return Array.from({ length: 14 }, (_, i) => {
+      const d = new Date(Date.now() - (13 - i) * 86400000);
+      const key = d.toISOString().slice(0, 10);
+      return map[key] || { date: key, donations: 0, quantity: 0 };
+    });
+  }, [analytics]);
 
-  const BarTooltip = ({ active, payload, label }) => {
-    if (!active || !payload?.length) return null;
-    return (
-      <div style={{
-        background: "#fff", border: "1px solid #e2e8f0",
-        borderRadius: 10, padding: "10px 14px",
-        boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-        fontFamily: "DM Sans, sans-serif"
-      }}>
-        <p style={{ fontWeight: 600, color: "#0f172a", marginBottom: 6, fontSize: 13 }}>
-          {label}
-        </p>
-        {payload.map((p, i) => (
-          <p key={i} style={{ color: p.color, fontSize: 13, margin: "2px 0" }}>
-            {p.name}: <strong>{p.value}</strong>
-          </p>
-        ))}
-      </div>
-    );
-  };
-
-  /* ==========================
-     Loading / Error states
-  ========================== */
+  /* ----------------------------------------------------------
+     Loading / Error / Null states
+     FIX #3: Null guard before accessing analytics fields
+  ---------------------------------------------------------- */
   if (loading) return (
     <div style={{
       display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center", minHeight: "100vh"
+      alignItems: "center", justifyContent: "center", minHeight: "100vh",
+      fontFamily: "DM Sans, sans-serif"
     }}>
       <div style={{
         width: 32, height: 32,
         border: "3px solid #e2e8f0", borderTopColor: "#6366f1",
         borderRadius: "50%", animation: "spin 0.7s linear infinite"
       }} />
-      <p style={{ color: "#64748b", marginTop: 16, fontFamily: "DM Sans, sans-serif" }}>
-        Loading analytics…
-      </p>
+      <p style={{ color: "#64748b", marginTop: 16 }}>Loading analytics…</p>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 
-  if (error) return (
+  if (error && !analytics) return (
     <div style={{
       display: "flex", flexDirection: "column",
       alignItems: "center", justifyContent: "center", minHeight: "100vh",
       fontFamily: "DM Sans, sans-serif"
     }}>
       <p style={{ color: "#dc2626", marginBottom: 12 }}>{error}</p>
-      <button onClick={fetchAnalytics} style={{
+      <button onClick={() => fetchAnalytics(false)} style={{
         padding: "9px 20px", background: "#6366f1", color: "#fff",
-        border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 600
+        border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 600,
+        fontFamily: "DM Sans, sans-serif"
       }}>Retry</button>
     </div>
   );
+
+  // FIX #3: Hard null guard — analytics must exist before rendering charts
+  if (!analytics) return null;
 
   return (
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #f1f5f9; font-family: 'DM Sans', sans-serif; }
 
-        @keyframes spin    { to { transform: rotate(360deg); } }
-        @keyframes fadeIn  { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes slideDown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes spin     { to { transform: rotate(360deg); } }
+        @keyframes fadeIn   { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulse    { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-        .admin { max-width: 1100px; margin: 0 auto; padding: 28px 20px 80px; animation: fadeIn 0.3s ease; }
+        .admin { max-width: 1100px; margin: 0 auto; padding: 28px 20px 80px; animation: fadeIn 0.3s ease; font-family: 'DM Sans', sans-serif; }
 
         /* HEADER */
         .admin-header {
@@ -174,6 +246,12 @@ function AdminDashboard() {
         .admin-header-subtitle { font-size: 13px; color: #94a3b8; margin-top: 1px; }
         .admin-header-actions  { display: flex; gap: 10px; align-items: center; }
 
+        /* REFRESH INDICATOR */
+        .refresh-dot {
+          width: 8px; height: 8px; background: #6366f1; border-radius: 50%;
+          animation: pulse 1s ease infinite;
+        }
+
         /* KPI GRID */
         .kpi-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 24px; }
         @media (max-width: 900px) { .kpi-grid { grid-template-columns: repeat(3, 1fr); } }
@@ -190,7 +268,7 @@ function AdminDashboard() {
         .kpi-label  { font-size: 11px; color: #64748b; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 500; }
         .kpi-sub    { font-size: 12px; margin-top: 6px; font-weight: 500; }
 
-        /* SECTION TITLES */
+        /* SECTION TITLE */
         .section-title {
           font-size: 15px; font-weight: 700; color: #0f172a;
           margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
@@ -216,7 +294,10 @@ function AdminDashboard() {
           font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500;
           color: #64748b; background: transparent; transition: all 0.15s;
         }
-        .chart-toggle-btn.active { background: #fff; color: #0f172a; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        .chart-toggle-btn.active {
+          background: #fff; color: #0f172a; font-weight: 600;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
 
         /* TWO COLUMN CHARTS */
         .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
@@ -236,9 +317,9 @@ function AdminDashboard() {
           display: flex; align-items: center; justify-content: center;
           font-size: 12px; font-weight: 700; flex-shrink: 0;
         }
-        .rank-1 { background: #fef9c3; color: #ca8a04; }
-        .rank-2 { background: #f1f5f9; color: #64748b; }
-        .rank-3 { background: #fff7ed; color: #c2410c; }
+        .rank-1     { background: #fef9c3; color: #ca8a04; }
+        .rank-2     { background: #f1f5f9; color: #64748b; }
+        .rank-3     { background: #fff7ed; color: #c2410c; }
         .rank-other { background: #f8fafc; color: #94a3b8; }
         .leaderboard-name  { flex: 1; font-size: 14px; font-weight: 600; color: #0f172a; }
         .leaderboard-meta  { font-size: 12px; color: #64748b; margin-top: 2px; }
@@ -246,15 +327,25 @@ function AdminDashboard() {
           font-size: 18px; font-weight: 700; color: #16a34a;
           font-family: 'DM Mono', monospace;
         }
-        .leaderboard-unit  { font-size: 11px; color: #94a3b8; font-weight: 400; }
+        .leaderboard-unit { font-size: 11px; color: #94a3b8; font-weight: 400; }
 
         /* BAR PROGRESS */
         .bar-track { height: 6px; background: #e2e8f0; border-radius: 3px; margin-top: 8px; overflow: hidden; }
         .bar-fill  { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
 
         /* EMPTY */
-        .empty-chart { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; color: #94a3b8; font-size: 14px; }
+        .empty-chart {
+          display: flex; flex-direction: column; align-items: center;
+          justify-content: center; height: 200px; color: #94a3b8; font-size: 14px;
+        }
         .empty-chart-icon { font-size: 32px; margin-bottom: 10px; }
+
+        /* ERROR BANNER */
+        .error-banner {
+          background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px;
+          padding: 10px 16px; font-size: 13px; color: #dc2626;
+          margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;
+        }
 
         /* BUTTONS */
         .btn {
@@ -269,8 +360,8 @@ function AdminDashboard() {
         .btn-ghost:hover  { background: #f8fafc; border-color: #94a3b8; color: #1e293b; }
         .btn-danger { background: #fff1f2; color: #e11d48; border: 1.5px solid #fecdd3; }
         .btn-danger:hover { background: #ffe4e6; border-color: #fda4af; }
-        .btn-sm { padding: 7px 13px; font-size: 12.5px; border-radius: 7px; }
-        .btn-icon { padding: 9px 10px; }
+        .btn-sm     { padding: 7px 13px; font-size: 12.5px; border-radius: 7px; }
+        .btn-icon   { padding: 9px 10px; }
       `}</style>
 
       <div className="admin">
@@ -285,16 +376,34 @@ function AdminDashboard() {
             </div>
           </div>
           <div className="admin-header-actions">
+            {/* FIX #13: Show subtle pulse dot during soft refresh instead of spinner */}
+            {refreshing && <div className="refresh-dot" title="Refreshing…" />}
             <button
               className="btn btn-ghost btn-icon"
-              onClick={fetchAnalytics}
+              onClick={() => fetchAnalytics(true)}
               title="Refresh"
+              disabled={refreshing}
             >↻</button>
             <button className="btn btn-danger btn-sm" onClick={logout}>
               ⎋ Logout
             </button>
           </div>
         </div>
+
+        {/* Error banner — shown over stale data, not instead of it */}
+        {error && analytics && (
+          <div className="error-banner">
+            <span>⚠ {error}</span>
+            <button
+              onClick={() => fetchAnalytics(true)}
+              style={{
+                background: "none", border: "none", color: "#dc2626",
+                cursor: "pointer", fontWeight: 600, fontFamily: "DM Sans, sans-serif",
+                fontSize: 13
+              }}
+            >Retry</button>
+          </div>
+        )}
 
         {/* ── KPI CARDS ── */}
         <div className="kpi-grid">
@@ -373,10 +482,12 @@ function AdminDashboard() {
             </div>
           </div>
 
-          {analytics.donationsPerDay?.length > 0 ? (
-            <ResponsiveContainer width="100%" height={240}>
+          {/* FIX #12: filledDonationsPerDay fills missing dates with 0 */}
+          {filledDonationsPerDay.length > 0 ? (
+            // FIX #14: minWidth prevents collapse on narrow viewports
+            <ResponsiveContainer width="100%" height={240} minWidth={200}>
               <AreaChart
-                data={analytics.donationsPerDay}
+                data={filledDonationsPerDay}
                 margin={{ top: 5, right: 10, left: -20, bottom: 0 }}
               >
                 <defs>
@@ -434,7 +545,7 @@ function AdminDashboard() {
               <span>🥧</span> Food Status Breakdown
             </div>
             {statusPieData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={220}>
+              <ResponsiveContainer width="100%" height={220} minWidth={200}>
                 <PieChart>
                   <Pie
                     data={statusPieData}
@@ -443,6 +554,7 @@ function AdminDashboard() {
                     paddingAngle={3} dataKey="value"
                   >
                     {statusPieData.map((entry, index) => (
+                      // FIX #8: use entry.name not index as key — stable across re-renders
                       <Cell key={entry.name} fill={PIE_COLORS[index]} />
                     ))}
                   </Pie>
@@ -475,7 +587,7 @@ function AdminDashboard() {
               <span>🤝</span> Top NGOs by Deliveries
             </div>
             {analytics.ngoActivity?.length > 0 ? (
-              <ResponsiveContainer width="100%" height={220}>
+              <ResponsiveContainer width="100%" height={220} minWidth={200}>
                 <BarChart
                   data={analytics.ngoActivity}
                   layout="vertical"
@@ -518,9 +630,12 @@ function AdminDashboard() {
           {analytics.topRestaurants?.length > 0 ? (
             <div className="leaderboard">
               {(() => {
-                const maxVal = Math.max(...analytics.topRestaurants.map(r => r.totalDelivered));
+                const maxVal = Math.max(
+                  ...analytics.topRestaurants.map(r => r.totalDelivered)
+                );
                 return analytics.topRestaurants.map((r, i) => (
-                  <div key={i} className="leaderboard-item">
+                  // FIX #8: stable key — use restaurantName, fall back to index
+                  <div key={r.restaurantName || i} className="leaderboard-item">
                     <div className={`leaderboard-rank rank-${i < 3 ? i + 1 : "other"}`}>
                       {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}
                     </div>
@@ -535,7 +650,7 @@ function AdminDashboard() {
                         <div
                           className="bar-fill"
                           style={{
-                            width: `${(r.totalDelivered / maxVal) * 100}%`,
+                            width: maxVal > 0 ? `${(r.totalDelivered / maxVal) * 100}%` : "0%",
                             background: i === 0
                               ? "#ca8a04" : i === 1
                               ? "#94a3b8" : i === 2
