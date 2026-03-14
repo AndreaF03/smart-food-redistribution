@@ -64,7 +64,6 @@ donationSchema.index({ restaurant: 1 });
 donationSchema.index({ createdAt: -1 });
 donationSchema.index({ expiryTime: 1 });
 
-
 /* =============================
    Auto mark expired donations
 ============================= */
@@ -76,18 +75,16 @@ donationSchema.pre("save", function (next) {
   next();
 });
 
-
 /* =============================
    Handle updates (findOneAndUpdate)
 ============================= */
 
-donationSchema.pre("findOneAndUpdate", function () {
+donationSchema.pre("findOneAndUpdate", function (next) {  // ← add next param
   const update = this.getUpdate();
-
   if (update?.expiryTime && update.expiryTime < new Date()) {
     this.set({ status: "expired" });
   }
+  next();  // ← add next() call
 });
-
 
 module.exports = mongoose.model("Donation", donationSchema);

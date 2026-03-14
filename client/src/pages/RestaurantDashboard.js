@@ -9,22 +9,23 @@ const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || "http://localhost:5000";
    MODULE-LEVEL HELPERS — stable references, never recreated
 ============================================================ */
 
-// FIX #12: Moved to module level
 const formatTime = (ts) =>
   new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-const getStatusColor = (status) => ({
-  available: "#16a34a",
-  reserved:  "#2563eb",
-  picked:    "#ca8a04",
-  delivered: "#64748b",
-  expired:   "#dc2626"
-}[status] || "#64748b");
+const getStatusColor = (status) =>
+  ({
+    available: "#16a34a",
+    reserved: "#2563eb",
+    picked: "#ca8a04",
+    delivered: "#64748b",
+    expired: "#dc2626",
+  })[status] || "#64748b";
 
-const getNotifIcon = (type) => ({
-  food_reserved:  "📦",
-  food_delivered: "✅"
-}[type] || "🔔");
+const getNotifIcon = (type) =>
+  ({
+    food_reserved: "📦",
+    food_delivered: "✅",
+  })[type] || "🔔";
 
 const getFreshnessColor = (score) => {
   const s = score ?? 0;
@@ -33,16 +34,82 @@ const getFreshnessColor = (score) => {
   return "#dc2626";
 };
 
-// FIX #13: Moved to module level
 const RATING_LABELS = ["", "Poor", "Fair", "Good", "Great", "Excellent"];
 
 /* ============================================================
-   StarRating — FIX #13: defined outside component
-   (inline component definitions unmount/remount every render)
+   COUNTDOWN HELPERS — module level, stable
+============================================================ */
+
+/**
+ * Given a predictedExpiry ISO string and the current timestamp (ms),
+ * returns an object:
+ *   { label: "2h 14m", urgent: false, expired: false }
+ *   { label: "28m 05s", urgent: true,  expired: false }  ← under 30 min
+ *   { label: "Expired", urgent: true,  expired: true  }
+ */
+const computeCountdown = (predictedExpiry, nowMs) => {
+  if (!predictedExpiry) return null;
+  const diffMs = new Date(predictedExpiry).getTime() - nowMs;
+  if (diffMs <= 0) return { label: "Expired", urgent: true, expired: true };
+
+  const totalSecs = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSecs / 3600);
+  const mins = Math.floor((totalSecs % 3600) / 60);
+  const secs = totalSecs % 60;
+
+  const urgent = diffMs < 30 * 60 * 1000; // under 30 minutes
+
+  if (hours > 0) {
+    // "2h 14m" — no seconds needed this far out
+    return { label: `${hours}h ${mins}m`, urgent, expired: false };
+  }
+  // Under 1 hour: show seconds for live feel
+  const mm = String(mins).padStart(2, "0");
+  const ss = String(secs).padStart(2, "0");
+  return { label: `${mm}m ${ss}s`, urgent, expired: false };
+};
+
+/* ============================================================
+   useNow — ticks every second, stable across renders
+   Returns current Date.now() value updated on an interval.
+============================================================ */
+function useNow() {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+/* ============================================================
+   ExpiryCountdown — pure display component
+   Renders a pill showing time remaining. Red + pulsing when urgent.
+============================================================ */
+const ExpiryCountdown = ({ predictedExpiry, now }) => {
+  const cd = computeCountdown(predictedExpiry, now);
+  if (!cd) return null;
+
+  return (
+    <span
+      className={`expiry-pill${cd.urgent ? " expiry-urgent" : ""}${cd.expired ? " expiry-expired" : ""}`}
+      title={
+        cd.expired
+          ? "This food has expired"
+          : `Expires at ${new Date(predictedExpiry).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+      }
+    >
+      {cd.expired ? "⚠ Expired" : `⏱ ${cd.label}`}
+    </span>
+  );
+};
+
+/* ============================================================
+   StarRating — defined outside component
 ============================================================ */
 const StarRating = ({ value, hover, onRate, onHover, onLeave, size = 28 }) => (
   <div style={{ display: "flex", gap: 4 }}>
-    {[1, 2, 3, 4, 5].map(star => (
+    {[1, 2, 3, 4, 5].map((star) => (
       <button
         key={star}
         type="button"
@@ -50,13 +117,19 @@ const StarRating = ({ value, hover, onRate, onHover, onLeave, size = 28 }) => (
         onMouseEnter={() => onHover(star)}
         onMouseLeave={onLeave}
         style={{
-          background: "none", border: "none", cursor: "pointer",
-          fontSize: size, padding: 0, lineHeight: 1,
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          fontSize: size,
+          padding: 0,
+          lineHeight: 1,
           color: star <= (hover || value) ? "#f59e0b" : "#e2e8f0",
           transition: "color 0.1s, transform 0.1s",
-          transform: star <= (hover || value) ? "scale(1.15)" : "scale(1)"
+          transform: star <= (hover || value) ? "scale(1.15)" : "scale(1)",
         }}
-      >★</button>
+      >
+        ★
+      </button>
     ))}
   </div>
 );
@@ -65,44 +138,48 @@ const StarRating = ({ value, hover, onRate, onHover, onLeave, size = 28 }) => (
    COMPONENT
 ============================================================ */
 function RestaurantDashboard() {
+  const navigate = useNavigate();
+  const socketRef = useRef(null);
+  const fetchDataRef = useRef(null);
+  const notifRef = useRef(null);
 
-  const navigate     = useNavigate();
-  const socketRef    = useRef(null);
-  const fetchDataRef = useRef(null); // FIX #5: stable ref to latest fetchFood
-  const notifRef     = useRef(null); // FIX #10: click-outside
+  // Live clock — drives all countdown timers
+  const now = useNow();
 
-  const [food,          setFood]          = useState([]);
-  const [loading,       setLoading]       = useState(true);
-  const [refreshing,    setRefreshing]    = useState(false); // FIX #15
+  const [food, setFood] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState({});
-  const [error,         setError]         = useState("");
-  const [success,       setSuccess]       = useState("");
-  const [activeFilter,  setActiveFilter]  = useState("all");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [activeFilter, setActiveFilter] = useState("all");
 
-  const [notifications,     setNotifications]     = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
-  const [unreadCount,       setUnreadCount]       = useState(0);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // Rating state
-  const [ratedFoodIds,     setRatedFoodIds]     = useState(new Set());
-  const [ratingModal,      setRatingModal]      = useState(null);
-  const [ratingValue,      setRatingValue]      = useState(0);
-  const [ratingHover,      setRatingHover]      = useState(0);
-  const [ratingComment,    setRatingComment]    = useState("");
+  const [ratedFoodIds, setRatedFoodIds] = useState(new Set());
+  const [ratingModal, setRatingModal] = useState(null);
+  const [ratingValue, setRatingValue] = useState(0);
+  const [ratingHover, setRatingHover] = useState(0);
+  const [ratingComment, setRatingComment] = useState("");
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
-  const [ratingError,      setRatingError]      = useState("");
+  const [ratingError, setRatingError] = useState("");
 
   /* ----------------------------------------------------------
-     FIX #6: Apply body background via useEffect with cleanup
+     Body background
   ---------------------------------------------------------- */
   useEffect(() => {
     const prev = document.body.style.background;
     document.body.style.background = "#f1f5f9";
-    return () => { document.body.style.background = prev; };
+    return () => {
+      document.body.style.background = prev;
+    };
   }, []);
 
   /* ----------------------------------------------------------
-     FIX #14: Auto-clear success message after 3.5s
+     Auto-clear success message after 3.5s
   ---------------------------------------------------------- */
   useEffect(() => {
     if (!success) return;
@@ -111,30 +188,25 @@ function RestaurantDashboard() {
   }, [success]);
 
   /* ----------------------------------------------------------
-     FIX #1, #2: No manual auth headers — interceptor handles it
-                 No duplicate 401 — interceptor handles it
-     FIX #15: silent=true keeps existing cards visible
+     Fetch food + ratings
   ---------------------------------------------------------- */
   const fetchFood = useCallback(async (silent = false) => {
     try {
       if (silent) setRefreshing(true);
-      else        setLoading(true);
+      else setLoading(true);
       setError("");
 
       const [foodRes, ratingsRes] = await Promise.all([
         axios.get("/food/restaurant/dashboard"),
-        axios.get("/ratings/my")
+        axios.get("/ratings/my"),
       ]);
 
       const data = foodRes.data || [];
       setFood(data);
 
-      // FIX #17: Normalise ObjectIds to strings before storing in Set
       const ids = (ratingsRes.data.ratedFoodIds || []).map(String);
       setRatedFoodIds(new Set(ids));
-
     } catch (err) {
-      // FIX #2: Interceptor handles 401 — only handle other errors here
       if (err.response?.status !== 401) {
         setError("Failed to load dashboard data.");
       }
@@ -144,13 +216,15 @@ function RestaurantDashboard() {
     }
   }, []);
 
-  // FIX #5: Keep ref current without re-triggering socket effect
-  useEffect(() => { fetchDataRef.current = fetchFood; }, [fetchFood]);
-
-  useEffect(() => { fetchFood(); }, [fetchFood]);
+  useEffect(() => {
+    fetchDataRef.current = fetchFood;
+  }, [fetchFood]);
+  useEffect(() => {
+    fetchFood();
+  }, [fetchFood]);
 
   /* ----------------------------------------------------------
-     FIX #16: Auto-refresh every 60 seconds
+     Auto-refresh every 60 seconds
   ---------------------------------------------------------- */
   useEffect(() => {
     const poll = setInterval(() => fetchFood(true), 60_000);
@@ -158,19 +232,17 @@ function RestaurantDashboard() {
   }, [fetchFood]);
 
   /* ----------------------------------------------------------
-     FIX #3: Correct route — /ratings not /api/ratings
-     FIX #4: Pass JWT via socket auth — server verifies via middleware
-     FIX #5: [] deps + fetchDataRef — no reconnect on render
+     Socket
   ---------------------------------------------------------- */
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) return;
 
     socketRef.current = io(SOCKET_URL, {
-      auth:  { token },               // FIX #4: server JWT middleware verifies this
+      auth: { token },
       transports: ["websocket"],
       reconnectionAttempts: 5,
-      reconnectionDelay: 2000
+      reconnectionDelay: 2000,
     });
 
     socketRef.current.on("connect_error", (err) => {
@@ -178,25 +250,30 @@ function RestaurantDashboard() {
     });
 
     socketRef.current.on("food_reserved", (data) => {
-      setNotifications(prev => [{ ...data, id: Date.now(), read: false }, ...prev]);
-      setUnreadCount(prev => prev + 1);
-      fetchDataRef.current?.(true); // FIX #5: stable ref, no stale closure
+      setNotifications((prev) => [
+        { ...data, id: Date.now(), read: false },
+        ...prev,
+      ]);
+      setUnreadCount((prev) => prev + 1);
+      fetchDataRef.current?.(true);
     });
 
     socketRef.current.on("food_delivered", (data) => {
-      setNotifications(prev => [{ ...data, id: Date.now(), read: false }, ...prev]);
-      setUnreadCount(prev => prev + 1);
+      setNotifications((prev) => [
+        { ...data, id: Date.now(), read: false },
+        ...prev,
+      ]);
+      setUnreadCount((prev) => prev + 1);
       fetchDataRef.current?.(true);
     });
 
     return () => {
       if (socketRef.current) socketRef.current.disconnect();
     };
-  // FIX #5: Empty deps — socket created once, uses ref for fetchFood
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ----------------------------------------------------------
-     FIX #10: Click-outside closes notification dropdown
+     Click-outside closes notification dropdown
   ---------------------------------------------------------- */
   useEffect(() => {
     if (!showNotifications) return;
@@ -210,44 +287,56 @@ function RestaurantDashboard() {
   }, [showNotifications]);
 
   /* ----------------------------------------------------------
-     FIX #15, #16: Derived stats via useMemo — no extra filter passes,
-     always in sync with food state
+     Derived stats
   ---------------------------------------------------------- */
-  const stats = useMemo(() => ({
-    total:     food.length,
-    available: food.filter(f => f.status === "available").length,
-    reserved:  food.filter(f => f.status === "reserved").length,
-    picked:    food.filter(f => f.status === "picked").length,
-    delivered: food.filter(f => f.status === "delivered").length
-  }), [food]);
+  const stats = useMemo(
+    () => ({
+      total: food.length,
+      available: food.filter((f) => f.status === "available").length,
+      reserved: food.filter((f) => f.status === "reserved").length,
+      picked: food.filter((f) => f.status === "picked").length,
+      delivered: food.filter((f) => f.status === "delivered").length,
+    }),
+    [food],
+  );
 
-  // FIX #16: filteredFood memoised
-  const filteredFood = useMemo(() =>
-    activeFilter === "all" ? food : food.filter(f => f.status === activeFilter),
-  [food, activeFilter]);
+  const filteredFood = useMemo(
+    () =>
+      activeFilter === "all"
+        ? food
+        : food.filter((f) => f.status === activeFilter),
+    [food, activeFilter],
+  );
 
   /* ----------------------------------------------------------
-     Mark Picked — FIX #7: wrapped in useCallback
+     Mark Picked
   ---------------------------------------------------------- */
-  const handleMarkPicked = useCallback(async (id) => {
-    setActionLoading(prev => ({ ...prev, [id]: true }));
-    try {
-      setError(""); setSuccess("");
-      await axios.patch(`/food/pick/${id}`, {});
-      setSuccess("Marked as picked successfully ✅");
-      fetchFood(true);
-    } catch (err) {
-      setError(err.response?.data?.message || "Failed to update status.");
-    } finally {
-      setActionLoading(prev => ({ ...prev, [id]: false }));
-    }
-  }, [fetchFood]);
+  const handleMarkPicked = useCallback(
+    async (id) => {
+      setActionLoading((prev) => ({ ...prev, [id]: true }));
+      try {
+        setError("");
+        setSuccess("");
+        await axios.patch(`/food/pick/${id}`, {});
+        setSuccess("Marked as picked successfully ✅");
+        fetchFood(true);
+      } catch (err) {
+        setError(err.response?.data?.message || "Failed to update status.");
+      } finally {
+        setActionLoading((prev) => ({ ...prev, [id]: false }));
+      }
+    },
+    [fetchFood],
+  );
 
   /* ----------------------------------------------------------
      Rating helpers
   ---------------------------------------------------------- */
   const openRatingModal = useCallback((item) => {
-    setRatingModal({ foodId: item._id, ngoName: item.reservedBy?.name || "the NGO" });
+    setRatingModal({
+      foodId: item._id,
+      ngoName: item.reservedBy?.name || "the NGO",
+    });
     setRatingValue(0);
     setRatingHover(0);
     setRatingComment("");
@@ -262,19 +351,20 @@ function RestaurantDashboard() {
     setRatingError("");
   }, []);
 
-  // FIX #3: Correct route /ratings (not /api/ratings)
   const submitRating = useCallback(async () => {
-    if (ratingValue === 0) { setRatingError("Please select a star rating."); return; }
+    if (ratingValue === 0) {
+      setRatingError("Please select a star rating.");
+      return;
+    }
     setRatingSubmitting(true);
     setRatingError("");
     try {
       await axios.post("/ratings", {
-        foodId:  ratingModal.foodId,
-        rating:  ratingValue,
-        comment: ratingComment.trim() || undefined
+        foodId: ratingModal.foodId,
+        rating: ratingValue,
+        comment: ratingComment.trim() || undefined,
       });
-      // FIX #17: Normalise to string before storing
-      setRatedFoodIds(prev => new Set([...prev, String(ratingModal.foodId)]));
+      setRatedFoodIds((prev) => new Set([...prev, String(ratingModal.foodId)]));
       setSuccess(`Rating submitted for ${ratingModal.ngoName} ✅`);
       closeRatingModal();
     } catch (err) {
@@ -285,7 +375,7 @@ function RestaurantDashboard() {
   }, [ratingValue, ratingComment, ratingModal, closeRatingModal]);
 
   /* ----------------------------------------------------------
-     FIX #8: All helpers in useCallback
+     Other actions
   ---------------------------------------------------------- */
   const logout = useCallback(() => {
     if (socketRef.current) socketRef.current.disconnect();
@@ -294,15 +384,15 @@ function RestaurantDashboard() {
   }, [navigate]);
 
   const markAllRead = useCallback(() => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     setUnreadCount(0);
   }, []);
 
   const dismissNotification = useCallback((id) => {
-    setNotifications(prev => {
-      const notif = prev.find(n => n.id === id);
-      if (notif && !notif.read) setUnreadCount(c => Math.max(0, c - 1));
-      return prev.filter(n => n.id !== id);
+    setNotifications((prev) => {
+      const notif = prev.find((n) => n.id === id);
+      if (notif && !notif.read) setUnreadCount((c) => Math.max(0, c - 1));
+      return prev.filter((n) => n.id !== id);
     });
   }, []);
 
@@ -311,23 +401,40 @@ function RestaurantDashboard() {
   /* ============================================================
      LOADING
   ============================================================ */
-  if (loading) return (
-    <div style={{
-      display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center",
-      minHeight: "100vh", background: "#f1f5f9"
-    }}>
-      <div style={{
-        width: 32, height: 32,
-        border: "3px solid #e2e8f0", borderTopColor: "#f97316",
-        borderRadius: "50%", animation: "spin 0.7s linear infinite"
-      }} />
-      <p style={{ color: "#64748b", marginTop: 16, fontFamily: "DM Sans, sans-serif" }}>
-        Loading dashboard…
-      </p>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
+  if (loading)
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: "100vh",
+          background: "#f1f5f9",
+        }}
+      >
+        <div
+          style={{
+            width: 32,
+            height: 32,
+            border: "3px solid #e2e8f0",
+            borderTopColor: "#f97316",
+            borderRadius: "50%",
+            animation: "spin 0.7s linear infinite",
+          }}
+        />
+        <p
+          style={{
+            color: "#64748b",
+            marginTop: 16,
+            fontFamily: "DM Sans, sans-serif",
+          }}
+        >
+          Loading dashboard…
+        </p>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
 
   /* ============================================================
      RENDER
@@ -338,11 +445,12 @@ function RestaurantDashboard() {
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        @keyframes spin      { to { transform: rotate(360deg); } }
-        @keyframes fadeIn    { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes slideDown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes modalIn   { from { opacity: 0; transform: scale(0.94) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
-        @keyframes pulse     { 0%,100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+        @keyframes spin        { to { transform: rotate(360deg); } }
+        @keyframes fadeIn      { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideDown   { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes modalIn     { from { opacity: 0; transform: scale(0.94) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+        @keyframes pulse       { 0%,100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+        @keyframes urgentPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 
         .r-dashboard { max-width: 960px; margin: 0 auto; padding: 28px 20px 60px; font-family: 'DM Sans', sans-serif; }
 
@@ -515,6 +623,29 @@ function RestaurantDashboard() {
           font-size: 12.5px; font-weight: 600;
         }
 
+        /* ── EXPIRY PILL ───────────────────────────────────────── */
+        .expiry-pill {
+          display: inline-flex; align-items: center; gap: 4px;
+          padding: 4px 10px; border-radius: 20px;
+          font-size: 12px; font-weight: 600;
+          font-family: 'DM Mono', monospace;
+          background: #f0fdf4; color: #16a34a;
+          border: 1px solid #bbf7d0;
+          white-space: nowrap;
+        }
+        /* Under 30 minutes — orange with slow blink */
+        .expiry-pill.expiry-urgent {
+          background: #fff7ed; color: #c2410c;
+          border-color: #fed7aa;
+          animation: urgentPulse 1.4s ease-in-out infinite;
+        }
+        /* Expired — red, solid */
+        .expiry-pill.expiry-expired {
+          background: #fef2f2; color: #dc2626;
+          border-color: #fecaca;
+          animation: none;
+        }
+
         /* EMPTY STATE */
         .empty-state { text-align: center; padding: 48px 20px; color: #94a3b8; }
         .empty-icon  { font-size: 40px; margin-bottom: 12px; }
@@ -601,7 +732,6 @@ function RestaurantDashboard() {
       `}</style>
 
       <div className="r-dashboard">
-
         {/* ── HEADER ── */}
         <div className="r-header">
           <div className="r-header-left">
@@ -613,8 +743,6 @@ function RestaurantDashboard() {
           </div>
 
           <div className="r-header-actions">
-
-            {/* FIX #19: useNavigate instead of <Link><button> */}
             <button
               className="btn btn-primary btn-sm"
               onClick={() => navigate("/add-donation")}
@@ -623,15 +751,16 @@ function RestaurantDashboard() {
             </button>
 
             {/* Notification Bell */}
-            {/* FIX #10: ref for click-outside */}
             <div className="notif-wrapper" ref={notifRef}>
               <button
                 className={`notif-bell${showNotifications ? " open" : ""}`}
-                onClick={() => setShowNotifications(p => !p)}
+                onClick={() => setShowNotifications((p) => !p)}
                 title="Notifications"
               >
                 🔔
-                {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
+                {unreadCount > 0 && (
+                  <span className="notif-badge">{unreadCount}</span>
+                )}
               </button>
 
               {showNotifications && (
@@ -650,26 +779,39 @@ function RestaurantDashboard() {
                         <div className="notif-empty-icon">🔔</div>
                         <p>No notifications yet</p>
                       </div>
-                    ) : notifications.map(n => (
-                      <div key={n.id} className={`notif-item${!n.read ? " unread" : ""}`}>
-                        <div className="notif-icon">{getNotifIcon(n.type)}</div>
-                        <div className="notif-body">
-                          <div className="notif-msg">{n.message}</div>
-                          <div className="notif-time">{formatTime(n.timestamp)}</div>
+                    ) : (
+                      notifications.map((n) => (
+                        <div
+                          key={n.id}
+                          className={`notif-item${!n.read ? " unread" : ""}`}
+                        >
+                          <div className="notif-icon">
+                            {getNotifIcon(n.type)}
+                          </div>
+                          <div className="notif-body">
+                            <div className="notif-msg">{n.message}</div>
+                            <div className="notif-time">
+                              {formatTime(n.timestamp)}
+                            </div>
+                          </div>
+                          <button
+                            className="notif-dismiss"
+                            onClick={() => dismissNotification(n.id)}
+                            aria-label="Dismiss notification"
+                          >
+                            ×
+                          </button>
                         </div>
-                        <button
-                          className="notif-dismiss"
-                          onClick={() => dismissNotification(n.id)}
-                          aria-label="Dismiss notification"
-                        >×</button>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
                 </div>
               )}
             </div>
 
-            <button className="btn btn-danger btn-sm" onClick={logout}>⎋ Logout</button>
+            <button className="btn btn-danger btn-sm" onClick={logout}>
+              ⎋ Logout
+            </button>
           </div>
         </div>
 
@@ -677,32 +819,50 @@ function RestaurantDashboard() {
         {error && (
           <div className="alert alert-error" role="alert">
             <span className="alert-body">⚠ {error}</span>
-            <button className="alert-dismiss" onClick={() => setError("")} aria-label="Dismiss">×</button>
+            <button
+              className="alert-dismiss"
+              onClick={() => setError("")}
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
           </div>
         )}
         {success && (
           <div className="alert alert-success" role="status">
             <span className="alert-body">{success}</span>
-            <button className="alert-dismiss" onClick={() => setSuccess("")} aria-label="Dismiss">×</button>
+            <button
+              className="alert-dismiss"
+              onClick={() => setSuccess("")}
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
           </div>
         )}
 
-        {/* ── STATS ── clickable filters */}
+        {/* ── STATS ── */}
         <div className="r-stats">
           {[
-            { key: "total",     label: "Total",     color: "#0f172a" },
-            { key: "available", label: "Available",  color: "#16a34a" },
-            { key: "reserved",  label: "Reserved",   color: "#2563eb" },
-            { key: "picked",    label: "Picked",     color: "#ca8a04" },
-            { key: "delivered", label: "Delivered",  color: "#64748b" },
-          ].map(s => (
+            { key: "total", label: "Total", color: "#0f172a" },
+            { key: "available", label: "Available", color: "#16a34a" },
+            { key: "reserved", label: "Reserved", color: "#2563eb" },
+            { key: "picked", label: "Picked", color: "#ca8a04" },
+            { key: "delivered", label: "Delivered", color: "#64748b" },
+          ].map((s) => (
             <div
               key={s.key}
               className={`r-stat-card${activeFilter === (s.key === "total" ? "all" : s.key) ? " active-filter" : ""}`}
-              style={activeFilter === (s.key === "total" ? "all" : s.key) ? { borderColor: s.color } : {}}
+              style={
+                activeFilter === (s.key === "total" ? "all" : s.key)
+                  ? { borderColor: s.color }
+                  : {}
+              }
               onClick={() => setActiveFilter(s.key === "total" ? "all" : s.key)}
             >
-              <div className="r-stat-number" style={{ color: s.color }}>{stats[s.key]}</div>
+              <div className="r-stat-number" style={{ color: s.color }}>
+                {stats[s.key]}
+              </div>
               <div className="r-stat-label">{s.label}</div>
             </div>
           ))}
@@ -710,7 +870,7 @@ function RestaurantDashboard() {
 
         {/* ── FILTER BAR ── */}
         <div className="filter-bar">
-          {filters.map(f => (
+          {filters.map((f) => (
             <button
               key={f}
               className={`filter-btn${activeFilter === f ? " active" : ""}`}
@@ -727,7 +887,8 @@ function RestaurantDashboard() {
           <div className="section-right">
             {refreshing && <div className="refresh-dot" title="Refreshing…" />}
             <div className="section-count">
-              {filteredFood.length} listing{filteredFood.length !== 1 ? "s" : ""}
+              {filteredFood.length} listing
+              {filteredFood.length !== 1 ? "s" : ""}
             </div>
           </div>
         </div>
@@ -736,35 +897,60 @@ function RestaurantDashboard() {
         {filteredFood.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon">🍱</div>
-            <p>{activeFilter === "all"
-              ? `No donations yet. Click "Add Donation" to get started.`
-              : `No ${activeFilter} donations.`}
+            <p>
+              {activeFilter === "all"
+                ? `No donations yet. Click "Add Donation" to get started.`
+                : `No ${activeFilter} donations.`}
             </p>
           </div>
         ) : (
           <div className="cards-grid">
-            {filteredFood.map(item => {
+            {filteredFood.map((item) => {
               const score = item.freshnessScore ?? 0;
               const freshColor = getFreshnessColor(score);
-              // FIX #17: Compare as strings
               const alreadyRated = ratedFoodIds.has(String(item._id));
 
               return (
                 <div key={item._id} className="r-card">
                   <div className="r-card-header">
                     <div className="r-card-title">{item.foodType}</div>
-                    <span
-                      className="status-badge"
+                    {/* Status badge + expiry countdown in the same top-right area */}
+                    <div
                       style={{
-                        background: `${getStatusColor(item.status)}18`,
-                        color: getStatusColor(item.status),
-                        border: `1px solid ${getStatusColor(item.status)}40`
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        justifyContent: "flex-end",
                       }}
-                    >● {item.status}</span>
+                    >
+                      {/* Expiry countdown — shown for active statuses only */}
+                      {item.predictedExpiry &&
+                        item.status !== "delivered" &&
+                        item.status !== "expired" && (
+                          <ExpiryCountdown
+                            predictedExpiry={item.predictedExpiry}
+                            now={now}
+                          />
+                        )}
+                      <span
+                        className="status-badge"
+                        style={{
+                          background: `${getStatusColor(item.status)}18`,
+                          color: getStatusColor(item.status),
+                          border: `1px solid ${getStatusColor(item.status)}40`,
+                        }}
+                      >
+                        ● {item.status}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="freshness-bar">
-                    <div className="freshness-fill" style={{ width: `${score}%`, background: freshColor }} />
+                    <div
+                      className="freshness-fill"
+                      style={{ width: `${score}%`, background: freshColor }}
+                    />
                   </div>
 
                   <div className="r-card-meta">
@@ -775,34 +961,40 @@ function RestaurantDashboard() {
 
                   {item.reservedBy && (
                     <div className="ngo-info">
-                      👤 Reserved by <strong>{item.reservedBy.name || "Unknown NGO"}</strong>
+                      👤 Reserved by{" "}
+                      <strong>{item.reservedBy.name || "Unknown NGO"}</strong>
                       {item.reservedBy.email && ` · ${item.reservedBy.email}`}
                     </div>
                   )}
 
                   <div className="r-card-actions">
-                    {/* Confirm pickup */}
                     {item.status === "reserved" && (
                       <button
                         className="btn btn-orange"
                         onClick={() => handleMarkPicked(item._id)}
                         disabled={!!actionLoading[item._id]}
                       >
-                        {actionLoading[item._id]
-                          ? <><span className="btn-spinner" /> Confirming…</>
-                          : <>✓ Confirm Pickup</>
-                        }
+                        {actionLoading[item._id] ? (
+                          <>
+                            <span className="btn-spinner" /> Confirming…
+                          </>
+                        ) : (
+                          <>✓ Confirm Pickup</>
+                        )}
                       </button>
                     )}
 
-                    {/* Rate NGO — only on delivered, not yet rated, NGO exists */}
-                    {item.status === "delivered" && !alreadyRated && item.reservedBy && (
-                      <button className="btn btn-star" onClick={() => openRatingModal(item)}>
-                        ⭐ Rate NGO
-                      </button>
-                    )}
+                    {item.status === "delivered" &&
+                      !alreadyRated &&
+                      item.reservedBy && (
+                        <button
+                          className="btn btn-star"
+                          onClick={() => openRatingModal(item)}
+                        >
+                          ⭐ Rate NGO
+                        </button>
+                      )}
 
-                    {/* Already rated */}
                     {item.status === "delivered" && alreadyRated && (
                       <span className="rated-badge">⭐ NGO Rated</span>
                     )}
@@ -814,9 +1006,7 @@ function RestaurantDashboard() {
         )}
       </div>
 
-      {/* ══════════════════════════════════
-          RATING MODAL
-      ══════════════════════════════════ */}
+      {/* ══ RATING MODAL ══ */}
       {ratingModal && (
         <div
           className="modal-overlay"
@@ -825,14 +1015,20 @@ function RestaurantDashboard() {
           aria-modal="true"
           aria-label="Rate NGO"
         >
-          <div className="modal" onClick={e => e.stopPropagation()}>
-
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">Rate this NGO</div>
-              <button className="modal-close" onClick={closeRatingModal} aria-label="Close modal">×</button>
+              <button
+                className="modal-close"
+                onClick={closeRatingModal}
+                aria-label="Close modal"
+              >
+                ×
+              </button>
             </div>
             <div className="modal-subtitle">
-              How did <strong>{ratingModal.ngoName}</strong> perform on this delivery?
+              How did <strong>{ratingModal.ngoName}</strong> perform on this
+              delivery?
             </div>
 
             <div className="modal-label">Your Rating</div>
@@ -845,9 +1041,12 @@ function RestaurantDashboard() {
                 onLeave={() => setRatingHover(0)}
                 size={32}
               />
-              <div className="modal-rating-label" style={{
-                opacity: (ratingHover || ratingValue) ? 1 : 0
-              }}>
+              <div
+                className="modal-rating-label"
+                style={{
+                  opacity: ratingHover || ratingValue ? 1 : 0,
+                }}
+              >
                 {RATING_LABELS[ratingHover || ratingValue]}
               </div>
             </div>
@@ -855,7 +1054,10 @@ function RestaurantDashboard() {
             <hr className="modal-divider" />
 
             <div className="modal-label">
-              Comment <span style={{ color: "#94a3b8", fontWeight: 400 }}>(optional)</span>
+              Comment{" "}
+              <span style={{ color: "#94a3b8", fontWeight: 400 }}>
+                (optional)
+              </span>
             </div>
             <textarea
               className="modal-textarea"
@@ -863,26 +1065,30 @@ function RestaurantDashboard() {
               maxLength={300}
               placeholder="How was the pickup and delivery experience?"
               value={ratingComment}
-              onChange={e => setRatingComment(e.target.value)}
+              onChange={(e) => setRatingComment(e.target.value)}
             />
             <div className="modal-char-count">{ratingComment.length} / 300</div>
 
             {ratingError && <div className="modal-error">⚠ {ratingError}</div>}
 
             <div className="modal-actions">
-              <button className="btn btn-ghost" onClick={closeRatingModal}>Cancel</button>
+              <button className="btn btn-ghost" onClick={closeRatingModal}>
+                Cancel
+              </button>
               <button
                 className="btn btn-indigo"
                 onClick={submitRating}
                 disabled={ratingSubmitting || ratingValue === 0}
               >
-                {ratingSubmitting
-                  ? <><span className="btn-spinner" /> Submitting…</>
-                  : <>⭐ Submit Rating</>
-                }
+                {ratingSubmitting ? (
+                  <>
+                    <span className="btn-spinner" /> Submitting…
+                  </>
+                ) : (
+                  <>⭐ Submit Rating</>
+                )}
               </button>
             </div>
-
           </div>
         </div>
       )}
