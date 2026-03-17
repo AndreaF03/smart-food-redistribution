@@ -1,4 +1,5 @@
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
 const http = require("http");
 const express = require("express");
@@ -7,7 +8,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 
 const authRoutes = require("./routes/authRoutes");
-const donationRoutes = require("./routes/donationRoutes");
+
 const foodRoutes = require("./routes/foodRoutes");
 const ratingRoutes = require("./routes/ratingRoutes");
 
@@ -148,7 +149,6 @@ app.get("/health", (req, res) => {
 // =============================
 
 app.use("/api/auth", authRoutes);
-app.use("/api/donations", donationRoutes);
 app.use("/api/food", foodRoutes);
 app.use("/api/ratings", ratingRoutes);
 
@@ -164,10 +164,13 @@ app.use(errorHandler);
 // =============================
 // SOCKET.IO (AFTER MIDDLEWARE)
 // =============================
+const io = initSocket(server, allowedOrigins);
 
-initSocket(server);
-
-
+// Middleware to make socket accessible in all routes via req.io
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
 // =============================
 // DATABASE CONNECTION
 // =============================

@@ -6,18 +6,17 @@ let io = null;
 const initSocket = (server, clientOrigin) => {
   io = new Server(server, {
     cors: {
-      origin: clientOrigin,
+      origin: clientOrigin || "http://localhost:3000",
       methods: ["GET", "POST"],
       credentials: true
     }
   });
 
   /* ==========================
-     AUTH MIDDLEWARE
+      AUTH MIDDLEWARE
   ========================== */
-
   io.use((socket, next) => {
-    const token = socket.handshake.auth?.token;
+    const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.split(" ")[1];
 
     if (!token) {
       return next(new Error("Authentication required"));
@@ -25,10 +24,8 @@ const initSocket = (server, clientOrigin) => {
 
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // attach authenticated user to socket
-      socket.userId = decoded.id;
-
+      // Logic fix: Ensure we capture the ID reliably
+      socket.userId = decoded.id || decoded._id;
       next();
     } catch (err) {
       next(new Error("Invalid token"));
@@ -36,36 +33,29 @@ const initSocket = (server, clientOrigin) => {
   });
 
   /* ==========================
-     CONNECTION
+      CONNECTION & ROOMS
   ========================== */
-
   io.on("connection", (socket) => {
-    console.log(`User ${socket.userId} connected (${socket.id})`);
-
-    // Auto join private notification room
-    socket.join(socket.userId);
+    // Standardize the room name as a string
+    const myRoom = socket.userId.toString();
+    
+    socket.join(myRoom);
+    console.log(`✅ User authenticated & joined room: ${myRoom}`);
 
     socket.on("disconnect", () => {
-      console.log(`User ${socket.userId} disconnected`);
+      console.log(`❌ User disconnected: ${myRoom}`);
     });
   });
 
   return io;
 };
 
-/* ==========================
-   SAFE ACCESSOR
-========================== */
-
 const getIO = () => {
   if (!io) {
-    console.warn("Socket.io not initialized — skipping emit");
+    console.warn("Socket.io not initialized");
     return null;
   }
   return io;
 };
 
-module.exports = {
-  initSocket,
-  getIO
-};
+module.exports = { initSocket, getIO };

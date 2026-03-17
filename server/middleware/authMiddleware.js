@@ -4,11 +4,8 @@ const User = require("../models/User");
 /* =========================
    Protect Route
 ========================= */
-
 exports.protect = async (req, res, next) => {
-
   try {
-
     let token;
 
     if (
@@ -18,86 +15,59 @@ exports.protect = async (req, res, next) => {
       token = req.headers.authorization.split(" ")[1];
     }
 
+    // Checking for token existence and a reasonable minimum length
     if (!token || token.length < 20) {
-      return res.status(401).json({
-        message: "Invalid token format"
-      });
+      return res.status(401).json({ message: "Not authorized, token missing or invalid" });
     }
 
-    if (!process.env.JWT_SECRET) {
-      throw new Error("JWT_SECRET is not defined in environment variables");
-    }
-
+    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    /* Fetch user (lean object for performance) */
-    const user = await User.findById(decoded.id)
-      .select("-password")
-      .lean();
+    // Fetch user (lean for speed, password excluded for security)
+    const user = await User.findById(decoded.id).select("-password").lean();
 
     if (!user) {
-      return res.status(401).json({
-        message: "User no longer exists"
-      });
+      return res.status(401).json({ message: "The user belonging to this token no longer exists" });
     }
 
-    /* Check if password changed after token issued */
+    /* Check if password changed after token was issued */
     if (user.passwordChangedAt) {
-      const changedAt = parseInt(user.passwordChangedAt.getTime() / 1000);
-
-      if (decoded.iat < changedAt) {
+      const changedTimestamp = parseInt(user.passwordChangedAt.getTime() / 1000, 10);
+      
+      // If token issued time (iat) is less than password change time
+      if (decoded.iat < changedTimestamp) {
         return res.status(401).json({
-          message: "Password was recently changed, please log in again"
+          message: "User recently changed password! Please log in again."
         });
       }
     }
 
+    // Attach user to the request object
     req.user = user;
-
     next();
-
   } catch (error) {
-
-    console.error("AUTH ERROR:", error);
+    console.error("AUTH ERROR:", error.name, error.message);
 
     if (error.name === "TokenExpiredError") {
-      return res.status(401).json({
-        message: "Token has expired, please log in again"
-      });
+      return res.status(401).json({ message: "Session expired, please log in again" });
     }
-
-    if (error.name === "JsonWebTokenError") {
-      return res.status(401).json({
-        message: "Invalid token, please log in again"
-      });
-    }
-
-    res.status(401).json({
-      message: "Not authorized"
-    });
+    
+    return res.status(401).json({ message: "Not authorized, token failed" });
   }
 };
-
 
 /* =========================
    Role Authorization
 ========================= */
-
 exports.authorizeRoles = (...roles) => {
-
   return (req, res, next) => {
-
     if (!req.user) {
-      console.error("authorizeRoles called without protect middleware");
-
-      return res.status(401).json({
-        message: "Not authenticated — protect middleware missing on this route"
-      });
+      return res.status(401).json({ message: "Authentication required" });
     }
 
     if (!roles.includes(req.user.role)) {
       return res.status(403).json({
-        message: `Access denied: requires one of [${roles.join(", ")}]`
+        message: `Role (${req.user.role}) is not authorized to access this resource`
       });
     }
 
