@@ -7,7 +7,8 @@ const {
   submitRating,
   getNGORatings,
   getMyRatings,
-  deleteRating
+  deleteRating,
+  getNGOLeaderboard
 } = require("../controllers/ratingController");
 
 const { protect, authorizeRoles } = require("../middleware/authMiddleware");
@@ -65,6 +66,13 @@ router.get(
   authorizeRoles("restaurant"),
   readLimiter,
   getMyRatings
+);
+router.get(
+  "/leaderboard",
+  protect,
+  authorizeRoles("admin"),
+  readLimiter,
+  getNGOLeaderboard
 );
 
 

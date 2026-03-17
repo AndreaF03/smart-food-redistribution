@@ -188,3 +188,97 @@ exports.deleteRating = async (req, res) => {
     message: "Rating deleted"
   });
 };
+/* =====================================
+   NGO LEADERBOARD (Admin)
+===================================== */
+exports.getNGOLeaderboard = async (req, res) => {
+  try {
+
+    // 🔹 Ratings aggregation
+    const ratingsAgg = await Rating.aggregate([
+      {
+        $group: {
+          _id: "$ngo",
+          avgRating: { $avg: "$rating" },
+          totalRatings: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // 🔹 Deliveries + response time
+    const deliveryAgg = await Food.aggregate([
+      {
+        $match: {
+          status: "delivered",
+          reservedBy: { $ne: null },
+          reservedAt: { $ne: null }
+        }
+      },
+      {
+        $group: {
+          _id: "$reservedBy",
+          totalDeliveries: { $sum: 1 },
+          avgResponseTime: {
+            $avg: {
+              $subtract: ["$reservedAt", "$createdAt"]
+            }
+          }
+        }
+      }
+    ]);
+
+    // 🔹 Merge both datasets
+    const leaderboardMap = {};
+
+    ratingsAgg.forEach(r => {
+      leaderboardMap[r._id.toString()] = {
+        ngoId: r._id,
+        avgRating: Number(r.avgRating.toFixed(2)),
+        totalRatings: r.totalRatings,
+        totalDeliveries: 0,
+        avgResponseTime: 0
+      };
+    });
+
+    deliveryAgg.forEach(d => {
+      const id = d._id.toString();
+
+      if (!leaderboardMap[id]) {
+        leaderboardMap[id] = {
+          ngoId: d._id,
+          avgRating: 0,
+          totalRatings: 0
+        };
+      }
+
+      leaderboardMap[id].totalDeliveries = d.totalDeliveries;
+      leaderboardMap[id].avgResponseTime = Math.round(d.avgResponseTime / 60000); // minutes
+    });
+
+    // 🔹 Convert to array
+    const leaderboard = Object.values(leaderboardMap);
+
+    // 🔹 Populate NGO names
+    const User = require("../models/User");
+
+    const users = await User.find({
+      _id: { $in: leaderboard.map(l => l.ngoId) }
+    }).select("name");
+
+    const userMap = {};
+    users.forEach(u => {
+      userMap[u._id.toString()] = u.name;
+    });
+
+    const final = leaderboard.map(l => ({
+      ...l,
+      ngoName: userMap[l.ngoId.toString()] || "Unknown NGO"
+    }));
+
+    res.status(200).json(final);
+
+  } catch (error) {
+    console.error("NGO LEADERBOARD ERROR:", error);
+    res.status(500).json({ message: error.message });
+  }
+};

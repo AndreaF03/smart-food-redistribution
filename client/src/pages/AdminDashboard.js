@@ -78,7 +78,8 @@ function AdminDashboard() {
   const [refreshing, setRefreshing]   = useState(false); // FIX #13: soft refresh
   const [error, setError]             = useState("");
   const [activeChart, setActiveChart] = useState("donations");
-
+  const [ngoLeaderboard, setNgoLeaderboard] = useState([]);
+  const [leaderboardSort, setLeaderboardSort] = useState("rating");
   const pollRef = useRef(null);
 
   /* ----------------------------------------------------------
@@ -109,6 +110,8 @@ function AdminDashboard() {
     try {
       const res = await axios.get("/food/admin/analytics");
       setAnalytics(res.data);
+      const lbRes = await axios.get("/ratings/leaderboard");
+      setNgoLeaderboard(lbRes.data);
     } catch (err) {
       // FIX #2: Interceptor handles 401 — only handle other errors here
       if (err.response?.status !== 401) {
@@ -177,6 +180,21 @@ function AdminDashboard() {
       return map[key] || { date: key, donations: 0, quantity: 0 };
     });
   }, [analytics]);
+  const sortedLeaderboard = useMemo(() => {
+  const arr = [...ngoLeaderboard];
+
+  if (leaderboardSort === "rating") {
+    return arr.sort((a, b) => b.avgRating - a.avgRating);
+  }
+  if (leaderboardSort === "deliveries") {
+    return arr.sort((a, b) => b.totalDeliveries - a.totalDeliveries);
+  }
+  if (leaderboardSort === "response") {
+    return arr.sort((a, b) => a.avgResponseTime - b.avgResponseTime);
+  }
+
+  return arr;
+}, [ngoLeaderboard, leaderboardSort]);
 
   /* ----------------------------------------------------------
      Loading / Error / Null states
@@ -674,7 +692,76 @@ function AdminDashboard() {
             </div>
           )}
         </div>
+{/* ── NGO PERFORMANCE LEADERBOARD ── */}
+<div className="chart-card">
+  <div className="section-title">
+    <span>🏅</span> NGO Performance Leaderboard
+  </div>
 
+  {/* SORT DROPDOWN */}
+  <div style={{ marginBottom: "12px" }}>
+    <select
+      value={leaderboardSort}
+      onChange={(e) => setLeaderboardSort(e.target.value)}
+      style={{
+        padding: "6px 10px",
+        borderRadius: "6px",
+        border: "1px solid #e2e8f0",
+        fontFamily: "DM Sans"
+      }}
+    >
+      <option value="rating">Sort by Rating</option>
+      <option value="deliveries">Sort by Deliveries</option>
+      <option value="response">Sort by Response Time</option>
+    </select>
+  </div>
+
+  {sortedLeaderboard.length > 0 ? (
+    <div className="leaderboard">
+      {sortedLeaderboard.map((ngo, i) => (
+        <div key={ngo.ngoId} className="leaderboard-item">
+          
+          <div className={`leaderboard-rank rank-${i < 3 ? i + 1 : "other"}`}>
+            {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}
+          </div>
+
+          <div style={{ flex: 1 }}>
+            <div className="leaderboard-name">
+              {ngo.ngoName}
+            </div>
+
+            <div className="leaderboard-meta">
+              ⭐ {ngo.avgRating || 0} | 📦 {ngo.totalDeliveries || 0} deliveries
+            </div>
+
+            <div className="bar-track">
+              <div
+                className="bar-fill"
+                style={{
+                  width: `${Math.min(ngo.avgRating * 20, 100)}%`,
+                  background: "#16a34a"
+                }}
+              />
+            </div>
+          </div>
+
+          <div style={{ textAlign: "right" }}>
+            <div className="leaderboard-value">
+              {ngo.avgResponseTime || "-"}
+            </div>
+            <div className="leaderboard-unit">min</div>
+          </div>
+
+        </div>
+      ))}
+    </div>
+  ) : (
+    <div className="empty-chart">
+      <div className="empty-chart-icon">🏅</div>
+      <p>No NGO data yet</p>
+    </div>
+  )}
+</div>
       </div>
     </>
   );
