@@ -2,19 +2,31 @@ import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import axios from "../api/axios";
 import { useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+
+// Fix Leaflet Marker Icons
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
+
+const DefaultIcon = L.icon({
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+});
+L.Marker.prototype.options.icon = DefaultIcon;
 
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || "http://localhost:5000";
 
 /* ============================================================
    MODULE-LEVEL HELPERS
 ============================================================ */
-
 const formatTime = (timestamp) =>
-  new Date(timestamp).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+// FIXED: Now being used in the UI
 const getFreshnessColor = (score) => {
   const s = score ?? 0;
   if (s >= 70) return "#16a34a";
@@ -25,49 +37,25 @@ const getFreshnessColor = (score) => {
 const formatDate = (dateStr) => {
   if (!dateStr) return "—";
   return new Date(dateStr).toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
   });
 };
 
-/* ============================================================
-   COUNTDOWN HELPERS — module level, stable
-============================================================ */
-
-/**
- * Given a predictedExpiry ISO string and the current timestamp (ms),
- * returns an object:
- *   { label: "2h 14m", urgent: false, expired: false }
- *   { label: "28m 05s", urgent: true,  expired: false }  ← under 30 min
- *   { label: "Expired", urgent: true,  expired: true  }
- */
 const computeCountdown = (predictedExpiry, nowMs) => {
   if (!predictedExpiry) return null;
   const diffMs = new Date(predictedExpiry).getTime() - nowMs;
   if (diffMs <= 0) return { label: "Expired", urgent: true, expired: true };
-
   const totalSecs = Math.floor(diffMs / 1000);
   const hours = Math.floor(totalSecs / 3600);
   const mins = Math.floor((totalSecs % 3600) / 60);
   const secs = totalSecs % 60;
-
-  const urgent = diffMs < 30 * 60 * 1000; // under 30 minutes
-
-  if (hours > 0) {
-    // "2h 14m" — no seconds needed this far out
-    return { label: `${hours}h ${mins}m`, urgent, expired: false };
-  }
-  // Under 1 hour: show seconds for live feel
-  const mm = String(mins).padStart(2, "0");
-  const ss = String(secs).padStart(2, "0");
-  return { label: `${mm}m ${ss}s`, urgent, expired: false };
+  const urgent = diffMs < 30 * 60 * 1000;
+  if (hours > 0) return { label: `${hours}h ${mins}m`, urgent, expired: false };
+  return { label: `${String(mins).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`, urgent, expired: false };
 };
 
 /* ============================================================
-   useNow — ticks every second, stable across renders
+   SUB-COMPONENTS
 ============================================================ */
 function useNow() {
   const [now, setNow] = useState(() => Date.now());
@@ -78,45 +66,34 @@ function useNow() {
   return now;
 }
 
-/* ============================================================
-   ExpiryCountdown — pure display component
-   Renders a pill showing time remaining. Red + pulsing when urgent.
-============================================================ */
 const ExpiryCountdown = ({ predictedExpiry, now }) => {
   const cd = computeCountdown(predictedExpiry, now);
   if (!cd) return null;
-
   return (
-    <span
-      className={`expiry-pill${cd.urgent ? " expiry-urgent" : ""}${cd.expired ? " expiry-expired" : ""}`}
-      title={
-        cd.expired
-          ? "This food has expired"
-          : `Expires at ${new Date(predictedExpiry).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-      }
-    >
+    <span className={`expiry-pill ${cd.urgent ? "expiry-urgent" : ""} ${cd.expired ? "expiry-expired" : ""}`}>
       {cd.expired ? "⚠ Expired" : `⏱ ${cd.label}`}
     </span>
   );
 };
 
+function ChangeView({ center }) {
+  const map = useMap();
+  map.setView(center, 13);
+  return null;
+}
+
 /* ============================================================
-   COMPONENT
+   MAIN COMPONENT
 ============================================================ */
 function NGODashboard() {
   const navigate = useNavigate();
   const socketRef = useRef(null);
   const fetchDataRef = useRef(null);
-
-  // Live clock — drives all countdown timers
+  const notifRef = useRef(null);
   const now = useNow();
 
   const [nearbyFood, setNearbyFood] = useState([]);
-  const [myFood, setMyFood] = useState({
-    reserved: [],
-    picked: [],
-    delivered: [],
-  });
+  const [myFood, setMyFood] = useState({ reserved: [], picked: [], delivered: [] });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -127,941 +104,228 @@ function NGODashboard() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  const notifRef = useRef(null);
+  const mapCenter = useMemo(() => [12.9716, 77.5946], []);
 
-  /* ----------------------------------------------------------
-     Body background
-  ---------------------------------------------------------- */
-  useEffect(() => {
-    const prev = document.body.style.background;
-    document.body.style.background = "#f1f5f9";
-    return () => {
-      document.body.style.background = prev;
-    };
-  }, []);
-
-  /* ----------------------------------------------------------
-     Auto-clear success message after 3.5 seconds
-  ---------------------------------------------------------- */
-  useEffect(() => {
-    if (!success) return;
-    const t = setTimeout(() => setSuccess(""), 3500);
-    return () => clearTimeout(t);
-  }, [success]);
-
-  /* ----------------------------------------------------------
-     Fetch data
-  ---------------------------------------------------------- */
   const fetchData = useCallback(async (silent = false) => {
     try {
-      if (silent) setRefreshing(true);
-      else setLoading(true);
+      if (!silent) setLoading(true); else setRefreshing(true);
       setError("");
-
       const [nearbyRes, myRes] = await Promise.all([
         axios.get("/food/nearby"),
         axios.get("/food/ngo/dashboard"),
       ]);
-
       setNearbyFood(nearbyRes.data || []);
       setMyFood(myRes.data || { reserved: [], picked: [], delivered: [] });
     } catch (err) {
-      if (err.response?.status !== 401) {
-        setError("Failed to load dashboard data.");
-      }
+      if (err.response?.status !== 401) setError("Failed to refresh dashboard.");
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setLoading(false); setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => {
-    fetchDataRef.current = fetchData;
-  }, [fetchData]);
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  useEffect(() => { fetchDataRef.current = fetchData; fetchData(); }, [fetchData]);
 
-  /* ----------------------------------------------------------
-     Auto-refresh every 60 seconds
-  ---------------------------------------------------------- */
-  useEffect(() => {
-    const poll = setInterval(() => fetchData(true), 60_000);
-    return () => clearInterval(poll);
-  }, [fetchData]);
-
-  /* ----------------------------------------------------------
-     Socket
-  ---------------------------------------------------------- */
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) return;
+    socketRef.current = io(SOCKET_URL, { auth: { token }, transports: ["websocket"] });
+    const handleNotification = (data) => {
+  setNotifications(prev => [
+    { ...data, id: Date.now(), read: false },
+    ...prev
+  ]);
+  setUnreadCount(c => c + 1);
 
-    socketRef.current = io(SOCKET_URL, {
-      auth: { token },
-      transports: ["websocket"],
-      reconnectionAttempts: 5,
-      reconnectionDelay: 2000,
-    });
+  if (fetchDataRef.current) {
+    fetchDataRef.current(true);
+  }
+};
 
-    socketRef.current.on("connect_error", (err) => {
-      console.warn("Socket connection error:", err.message);
-    });
-
-    socketRef.current.on("food_picked", (data) => {
-      setNotifications((prev) => [
-        { ...data, id: Date.now(), read: false },
-        ...prev,
-      ]);
-      setUnreadCount((prev) => prev + 1);
-      fetchDataRef.current?.(true);
-    });
-
+socketRef.current.on("food_reserved", handleNotification);
+socketRef.current.on("food_picked", handleNotification);
+socketRef.current.on("food_delivered", handleNotification);
     return () => {
-      if (socketRef.current) socketRef.current.disconnect();
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  socketRef.current?.off("food_reserved");
+  socketRef.current?.off("food_picked");
+  socketRef.current?.off("food_delivered");
+  socketRef.current?.disconnect();
+};
+  }, []);
 
-  /* ----------------------------------------------------------
-     Click-outside closes notification dropdown
-  ---------------------------------------------------------- */
-  useEffect(() => {
-    if (!showNotifications) return;
-    const handleClickOutside = (e) => {
-      if (notifRef.current && !notifRef.current.contains(e.target)) {
-        setShowNotifications(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showNotifications]);
-
-  /* ----------------------------------------------------------
-     Action loader helper
-  ---------------------------------------------------------- */
-  const withActionLoading = useCallback(async (id, fn) => {
-    setActionLoading((prev) => ({ ...prev, [id]: true }));
+  const reserveFood = async (id) => {
+    setActionLoading(p => ({ ...p, [id]: true }));
     try {
-      await fn();
-    } finally {
-      setActionLoading((prev) => ({ ...prev, [id]: false }));
-    }
-  }, []);
+      await axios.patch(`/food/reserve/${id}`);
+      setSuccess("Reserved successfully! 📦");
+      fetchData(true);
+    } catch (err) { setError(err.response?.data?.message || "Reservation failed."); }
+    finally { setActionLoading(p => ({ ...p, [id]: false })); }
+  };
 
-  /* ----------------------------------------------------------
-     Reserve Food
-  ---------------------------------------------------------- */
-  const reserveFood = useCallback(
-    (id) =>
-      withActionLoading(id, async () => {
-        try {
-          setError("");
-          setSuccess("");
-          await axios.patch(`/food/reserve/${id}`, {});
-          setSuccess("Food reserved successfully ✅");
-          fetchData(true);
-        } catch (err) {
-          setError(
-            err.response?.data?.message ||
-              "Reservation failed. Please try again.",
-          );
-        }
-      }),
-    [withActionLoading, fetchData],
-  );
+  const markDelivered = async (id) => {
+    setActionLoading(p => ({ ...p, [id]: true }));
+    try {
+      await axios.patch(`/food/deliver/${id}`);
+      setSuccess("Marked as delivered! ✅");
+      fetchData(true);
+    } catch (err) { setError("Failed to update status."); }
+    finally { setActionLoading(p => ({ ...p, [id]: false })); }
+  };
 
-  /* ----------------------------------------------------------
-     Mark Delivered
-  ---------------------------------------------------------- */
-  const markDelivered = useCallback(
-    (id) =>
-      withActionLoading(id, async () => {
-        try {
-          setError("");
-          setSuccess("");
-          await axios.patch(`/food/deliver/${id}`, {});
-          setSuccess("Marked as delivered ✅");
-          fetchData(true);
-        } catch (err) {
-          setError(
-            err.response?.data?.message ||
-              "Delivery update failed. Please try again.",
-          );
-        }
-      }),
-    [withActionLoading, fetchData],
-  );
+  const tabs = useMemo(() => [
+    { id: "nearby", label: "Available", icon: "📍", count: nearbyFood.length },
+    { id: "reserved", label: "Reserved", icon: "📦", count: myFood.reserved.length },
+    { id: "picked", label: "Ready", icon: "🚚", count: myFood.picked.length },
+    { id: "delivered", label: "History", icon: "✅", count: myFood.delivered.length },
+  ], [nearbyFood.length, myFood]);
 
-  /* ----------------------------------------------------------
-     Other actions
-  ---------------------------------------------------------- */
-  const logout = useCallback(() => {
-    if (socketRef.current) socketRef.current.disconnect();
-    localStorage.clear();
-    navigate("/login");
-  }, [navigate]);
+  if (loading) return <div style={{ textAlign: 'center', marginTop: '50px' }}>Loading NGO Dashboard...</div>;
 
-  const markAllRead = useCallback(() => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    setUnreadCount(0);
-  }, []);
-
-  const dismissNotification = useCallback((id) => {
-    setNotifications((prev) => {
-      const notif = prev.find((n) => n.id === id);
-      if (notif && !notif.read) setUnreadCount((c) => Math.max(0, c - 1));
-      return prev.filter((n) => n.id !== id);
-    });
-  }, []);
-
-  /* ----------------------------------------------------------
-     Memoised tab config
-  ---------------------------------------------------------- */
-  const tabs = useMemo(
-    () => [
-      {
-        id: "nearby",
-        label: "Available",
-        icon: "📍",
-        count: nearbyFood.length,
-      },
-      {
-        id: "reserved",
-        label: "Reserved",
-        icon: "📦",
-        count: myFood.reserved.length,
-      },
-      {
-        id: "picked",
-        label: "Ready to Deliver",
-        icon: "🚚",
-        count: myFood.picked.length,
-      },
-      {
-        id: "delivered",
-        label: "Delivered",
-        icon: "✅",
-        count: myFood.delivered.length,
-      },
-    ],
-    [
-      nearbyFood.length,
-      myFood.reserved.length,
-      myFood.picked.length,
-      myFood.delivered.length,
-    ],
-  );
-
-  /* ============================================================
-     LOADING STATE
-  ============================================================ */
-  if (loading)
-    return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          minHeight: "100vh",
-          background: "#f1f5f9",
-        }}
-      >
-        <div
-          style={{
-            width: 32,
-            height: 32,
-            border: "3px solid #e2e8f0",
-            borderTopColor: "#16a34a",
-            borderRadius: "50%",
-            animation: "spin 0.7s linear infinite",
-          }}
-        />
-        <p
-          style={{
-            color: "#64748b",
-            marginTop: 16,
-            fontFamily: "DM Sans, sans-serif",
-          }}
-        >
-          Loading dashboard…
-        </p>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    );
-
-  /* ============================================================
-     RENDER
-  ============================================================ */
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap');
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-        @keyframes spin        { to { transform: rotate(360deg); } }
-        @keyframes fadeIn      { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes slideDown   { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes pulse       { 0%,100% { transform: scale(1); } 50% { transform: scale(1.2); } }
-        @keyframes fadeOut     { from { opacity: 1; } to { opacity: 0; } }
-        @keyframes urgentPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
-
-        .dashboard { max-width: 900px; margin: 0 auto; padding: 28px 20px 60px; font-family: 'DM Sans', sans-serif; }
-
-        /* HEADER */
-        .ngo-header {
-          display: flex; justify-content: space-between; align-items: center;
-          background: #fff; border-radius: 16px; padding: 18px 24px;
-          margin-bottom: 20px; border: 1px solid #e2e8f0;
-          box-shadow: 0 1px 4px rgba(0,0,0,0.05);
-        }
-        .ngo-header-left    { display: flex; align-items: center; gap: 12px; }
-        .ngo-header-logo    {
-          width: 42px; height: 42px;
-          background: linear-gradient(135deg, #22c55e, #16a34a);
-          border-radius: 12px; display: flex; align-items: center;
-          justify-content: center; font-size: 20px;
-        }
-        .ngo-header-title    { font-size: 20px; font-weight: 700; color: #0f172a; }
-        .ngo-header-subtitle { font-size: 13px; color: #94a3b8; margin-top: 1px; }
-        .ngo-header-actions  { display: flex; gap: 10px; align-items: center; }
-
-        /* NOTIFICATION BELL */
-        .notif-wrapper  { position: relative; }
-        .notif-bell {
-          position: relative; width: 40px; height: 40px;
-          display: flex; align-items: center; justify-content: center;
-          background: #fff; border: 1.5px solid #e2e8f0;
-          border-radius: 10px; cursor: pointer; font-size: 18px;
-          transition: all 0.18s;
-        }
-        .notif-bell:hover  { background: #f8fafc; border-color: #94a3b8; }
-        .notif-bell.open   { background: #f8fafc; border-color: #94a3b8; }
-        .notif-badge {
-          position: absolute; top: -5px; right: -5px;
-          background: #e11d48; color: #fff;
-          min-width: 18px; height: 18px; border-radius: 9px;
-          font-size: 10px; font-weight: 700;
-          display: flex; align-items: center; justify-content: center;
-          padding: 0 4px; border: 2px solid #fff;
-          animation: pulse 1.5s ease infinite;
-        }
-        .notif-dropdown {
-          position: absolute; top: 48px; right: 0;
-          width: 320px; background: #fff;
-          border: 1px solid #e2e8f0; border-radius: 14px;
-          box-shadow: 0 8px 30px rgba(0,0,0,0.12);
-          z-index: 999; animation: slideDown 0.2s ease; overflow: hidden;
-        }
-        .notif-header {
-          display: flex; justify-content: space-between; align-items: center;
-          padding: 14px 16px; border-bottom: 1px solid #f1f5f9;
-        }
-        .notif-title     { font-size: 14px; font-weight: 600; color: #0f172a; }
-        .notif-mark-read {
-          font-size: 12px; color: #2563eb; background: none;
-          border: none; cursor: pointer; font-weight: 500;
-          font-family: 'DM Sans', sans-serif;
-        }
-        .notif-mark-read:hover { text-decoration: underline; }
-        .notif-list      { max-height: 300px; overflow-y: auto; }
-        .notif-item {
-          padding: 12px 16px; border-bottom: 1px solid #f8fafc;
-          display: flex; gap: 10px; align-items: flex-start;
-          transition: background 0.15s;
-        }
-        .notif-item:last-child { border-bottom: none; }
-        .notif-item:hover      { background: #f8fafc; }
-        .notif-item.unread     { background: #eff6ff; }
-        .notif-item.unread:hover { background: #dbeafe; }
-        .notif-icon    { font-size: 20px; flex-shrink: 0; margin-top: 2px; }
-        .notif-body    { flex: 1; min-width: 0; }
-        .notif-msg     { font-size: 13px; color: #1e293b; font-weight: 500; line-height: 1.4; }
-        .notif-time    { font-size: 11px; color: #94a3b8; margin-top: 3px; }
-        .notif-dismiss {
-          background: none; border: none; cursor: pointer;
-          color: #cbd5e1; font-size: 16px; padding: 0;
-          flex-shrink: 0; line-height: 1; transition: color 0.15s;
-        }
-        .notif-dismiss:hover { color: #64748b; }
-        .notif-empty      { padding: 32px 16px; text-align: center; color: #94a3b8; font-size: 13px; }
-        .notif-empty-icon { font-size: 28px; margin-bottom: 8px; }
-
-        /* STATS */
-        .stats-bar {
-          display: grid; grid-template-columns: repeat(4, 1fr);
-          gap: 12px; margin-bottom: 20px;
-        }
-        .stat-card {
-          background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-          padding: 14px 16px; text-align: center;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-        }
-        .stat-number { font-size: 26px; font-weight: 700; line-height: 1; }
-        .stat-label  { font-size: 11px; color: #64748b; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 500; }
-
-        /* ALERTS */
-        .alert {
-          border-radius: 10px; padding: 12px 16px;
-          font-size: 14px; font-weight: 500;
-          margin-bottom: 16px; animation: slideDown 0.2s ease;
-          display: flex; align-items: flex-start; gap: 10px;
-        }
-        .alert-error   { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
-        .alert-success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
-        .alert-body    { flex: 1; }
-        .alert-dismiss {
-          background: none; border: none; cursor: pointer;
-          font-size: 18px; opacity: 0.5; line-height: 1;
-          padding: 0; color: inherit; flex-shrink: 0;
-          transition: opacity 0.15s;
-        }
-        .alert-dismiss:hover { opacity: 1; }
-
-        /* TABS */
-        .tabs {
-          display: flex; gap: 6px; background: #fff;
-          border-radius: 12px; padding: 6px;
-          border: 1px solid #e2e8f0; margin-bottom: 20px;
-        }
-        .tab-btn {
-          flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
-          padding: 10px 8px; border: none; border-radius: 8px; cursor: pointer;
-          font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
-          color: #64748b; background: transparent; transition: all 0.18s;
-        }
-        .tab-btn:hover        { background: #f8fafc; color: #334155; }
-        .tab-btn.active       { background: #0f172a; color: #fff; font-weight: 600; }
-        .tab-count {
-          display: inline-flex; align-items: center; justify-content: center;
-          min-width: 20px; height: 20px; border-radius: 10px;
-          font-size: 11px; font-weight: 700; padding: 0 5px;
-        }
-        .tab-btn.active .tab-count        { background: rgba(255,255,255,0.2); color: #fff; }
-        .tab-btn:not(.active) .tab-count  { background: #e2e8f0; color: #475569; }
-
-        /* CARDS */
-        .cards-grid { display: flex; flex-direction: column; gap: 12px; animation: fadeIn 0.25s ease; }
-        .card {
-          background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
-          padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-          transition: box-shadow 0.2s, transform 0.15s;
-        }
-        .card:hover        { box-shadow: 0 5px 16px rgba(0,0,0,0.08); transform: translateY(-1px); }
-        .card.faded        { opacity: 0.65; }
-        .card-header       { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
-        .card-title        { font-size: 16px; font-weight: 600; color: #0f172a; }
-        .card-meta         { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
-        .meta-pill {
-          background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 20px;
-          padding: 4px 12px; font-size: 12.5px; color: #475569;
-          font-family: 'DM Mono', monospace; font-weight: 500;
-        }
-        .meta-pill.fresh   { background: #f0fdf4; border-color: #bbf7d0; color: #16a34a; }
-        .card-actions      { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
-
-        /* FRESHNESS BAR */
-        .freshness-bar  { height: 4px; background: #e2e8f0; border-radius: 2px; margin-bottom: 14px; overflow: hidden; }
-        .freshness-fill { height: 100%; border-radius: 2px; }
-
-        /* STATUS BADGES */
-        .status-badge     { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-        .status-available { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
-        .status-reserved  { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
-        .status-picked    { background: #fefce8; color: #ca8a04; border: 1px solid #fde68a; }
-        .status-delivered { background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; }
-
-        /* INFO BOX */
-        .info-box {
-          background: #fefce8; border: 1px solid #fde68a;
-          border-radius: 8px; padding: 10px 14px;
-          font-size: 13px; color: #92400e; margin-top: 10px; line-height: 1.5;
-        }
-
-        /* CONTACT BOX */
-        .contact-box {
-          background: #f0fdf4; border: 1px solid #bbf7d0;
-          border-radius: 8px; padding: 10px 14px;
-          font-size: 13px; color: #15803d; margin-top: 8px; line-height: 1.6;
-        }
-
-        /* DELIVERED META */
-        .delivered-time {
-          font-size: 12px; color: #94a3b8; margin-top: 8px;
-          font-family: 'DM Mono', monospace;
-        }
-
-        /* ── EXPIRY PILL ───────────────────────────────────────── */
-        .expiry-pill {
-          display: inline-flex; align-items: center; gap: 4px;
-          padding: 4px 10px; border-radius: 20px;
-          font-size: 12px; font-weight: 600;
-          font-family: 'DM Mono', monospace;
-          background: #f0fdf4; color: #16a34a;
-          border: 1px solid #bbf7d0;
-          white-space: nowrap;
-        }
-        /* Under 30 minutes — orange with slow blink */
-        .expiry-pill.expiry-urgent {
-          background: #fff7ed; color: #c2410c;
-          border-color: #fed7aa;
-          animation: urgentPulse 1.4s ease-in-out infinite;
-        }
-        /* Expired — red, solid */
-        .expiry-pill.expiry-expired {
-          background: #fef2f2; color: #dc2626;
-          border-color: #fecaca;
-          animation: none;
-        }
-
-        /* EMPTY STATE */
-        .empty-state { text-align: center; padding: 48px 20px; color: #94a3b8; }
-        .empty-icon  { font-size: 40px; margin-bottom: 12px; }
-        .empty-state p { font-size: 14px; }
-
-        /* BUTTONS */
-        .btn {
-          display: inline-flex; align-items: center; gap: 7px;
-          padding: 9px 18px; border: none; border-radius: 9px;
-          font-family: 'DM Sans', sans-serif; font-size: 13.5px; font-weight: 600;
-          cursor: pointer; line-height: 1; white-space: nowrap;
-          transition: background 0.16s, box-shadow 0.16s, transform 0.1s;
-        }
-        .btn:active:not(:disabled) { transform: scale(0.96); }
-        .btn:disabled { opacity: 0.55; cursor: not-allowed; }
-
-        .btn-primary { background: #16a34a; color: #fff; box-shadow: 0 2px 6px rgba(22,163,74,0.3); }
-        .btn-primary:hover:not(:disabled) { background: #15803d; box-shadow: 0 4px 14px rgba(22,163,74,0.4); }
-
-        .btn-action { background: #2563eb; color: #fff; box-shadow: 0 2px 6px rgba(37,99,235,0.3); }
-        .btn-action:hover:not(:disabled) { background: #1d4ed8; box-shadow: 0 4px 14px rgba(37,99,235,0.4); }
-
-        .btn-ghost { background: #fff; color: #475569; border: 1.5px solid #cbd5e1; }
-        .btn-ghost:hover:not(:disabled) { background: #f8fafc; border-color: #94a3b8; color: #1e293b; }
-
-        .btn-danger { background: #fff1f2; color: #e11d48; border: 1.5px solid #fecdd3; }
-        .btn-danger:hover:not(:disabled) { background: #ffe4e6; border-color: #fda4af; }
-
-        .btn-icon { padding: 9px 10px; }
-        .btn-sm   { padding: 7px 13px; font-size: 12.5px; border-radius: 7px; }
-
-        .btn-spinner {
-          width: 13px; height: 13px;
-          border: 2px solid rgba(255,255,255,0.4);
-          border-top-color: #fff; border-radius: 50%;
-          animation: spin 0.6s linear infinite;
-        }
-
-        /* REFRESH DOT */
-        .refresh-dot {
-          width: 8px; height: 8px; background: #16a34a; border-radius: 50%;
-          animation: pulse 1s ease infinite; flex-shrink: 0;
-        }
+        .ngo-dashboard { max-width: 900px; margin: 0 auto; padding: 20px; font-family: 'DM Sans', sans-serif; background: #f1f5f9; min-height: 100vh; }
+        .ngo-header { display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 18px 24px; border-radius: 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .refresh-dot { display: inline-block; width: 8px; height: 8px; background-color: #22c55e; border-radius: 50%; margin-left: 10px; animation: pulse-green 2s infinite; }
+        .notif-bell { position: relative; width: 42px; height: 42px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; cursor: pointer; font-size: 20px; }
+        .notif-badge { position: absolute; top: -5px; right: -5px; background: #ef4444; color: #fff; font-size: 10px; font-weight: 700; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 2px solid #fff; }
+        .notif-dropdown { position: absolute; top: 55px; right: 0; width: 300px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); z-index: 1000; overflow: hidden; }
+        .tab-bar { display: flex; gap: 8px; background: #fff; padding: 8px; border-radius: 12px; border: 1px solid #e2e8f0; margin-bottom: 20px; }
+        .tab-btn { flex: 1; padding: 10px; border: none; border-radius: 8px; cursor: pointer; background: none; color: #64748b; font-weight: 500; font-size: 13px; transition: 0.2s; }
+        .tab-btn.active { background: #0f172a; color: #fff; }
+        .card { background: #fff; border-radius: 16px; padding: 20px; margin-bottom: 12px; border: 1px solid #e2e8f0; }
+        .freshness-bar { height: 6px; background: #e2e8f0; border-radius: 3px; margin: 10px 0; overflow: hidden; }
+        .freshness-fill { height: 100%; transition: width 0.5s ease; }
+        .expiry-pill { font-family: 'DM Mono'; font-size: 12px; padding: 4px 10px; border-radius: 20px; background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; font-weight: 600; }
+        .expiry-urgent { background: #fff1f2; color: #e11d48; border-color: #fecdd3; animation: blink 1s infinite; }
+        .btn { padding: 9px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; border: none; font-size: 13.5px; transition: 0.2s; }
+        .map-container { height: 350px; width: 100%; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0; margin-bottom: 20px; }
+        .alert { padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; display: flex; justify-content: space-between; }
+        @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } }
+        @keyframes blink { 50% { opacity: 0.6; } }
       `}</style>
 
-      <div className="dashboard">
-        {/* ── HEADER ── */}
-        <div className="ngo-header">
-          <div className="ngo-header-left">
-            <div className="ngo-header-logo">🌱</div>
-            <div>
-              <div className="ngo-header-title">NGO Dashboard</div>
-              <div className="ngo-header-subtitle">
-                Smart Food Redistribution
-              </div>
-            </div>
+      <div className="ngo-dashboard">
+        {success && <div className="alert" style={{background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0'}}>{success} <button onClick={() => setSuccess("")} style={{background:'none', border:'none'}}>×</button></div>}
+        {error && <div className="alert" style={{background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca'}}>{error} <button onClick={() => setError("")} style={{background:'none', border:'none'}}>×</button></div>}
+
+        <header className="ngo-header">
+          <div>
+            <h1 style={{ fontSize: '20px' }}>NGO Dashboard 🌱 {refreshing && <span className="refresh-dot" />}</h1>
+            <p style={{ color: '#64748b', fontSize: '13px' }}>Smart Food Redistribution</p>
           </div>
-
-          <div className="ngo-header-actions">
-            {refreshing && <div className="refresh-dot" title="Refreshing…" />}
-
-            <button
-              className="btn btn-ghost btn-icon"
-              onClick={() => fetchData(true)}
-              disabled={refreshing}
-              title="Refresh"
-            >
-              <span
-                style={{
-                  display: "inline-block",
-                  animation: refreshing ? "spin 0.6s linear infinite" : "none",
-                }}
-              >
-                ↻
-              </span>
-            </button>
-
-            {/* Notification Bell */}
-            <div className="notif-wrapper" ref={notifRef}>
-              <button
-                className={`notif-bell${showNotifications ? " open" : ""}`}
-                onClick={() => setShowNotifications((prev) => !prev)}
-                title="Notifications"
-              >
-                🔔
-                {unreadCount > 0 && (
-                  <span className="notif-badge">{unreadCount}</span>
-                )}
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <button className="btn" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569' }} onClick={() => fetchData(true)} disabled={refreshing}>↻ Refresh</button>
+            <div style={{ position: 'relative' }} ref={notifRef}>
+              <button className="notif-bell" onClick={() => { setShowNotifications(!showNotifications); setUnreadCount(0); }}>
+                🔔 {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
               </button>
-
               {showNotifications && (
                 <div className="notif-dropdown">
-                  <div className="notif-header">
-                    <span className="notif-title">Notifications</span>
-                    {notifications.length > 0 && (
-                      <button className="notif-mark-read" onClick={markAllRead}>
-                        Mark all read
-                      </button>
-                    )}
-                  </div>
-                  <div className="notif-list">
-                    {notifications.length === 0 ? (
-                      <div className="notif-empty">
-                        <div className="notif-empty-icon">🔔</div>
-                        <p>No notifications yet</p>
+                  <div style={{ padding: '12px', fontWeight: '700', borderBottom: '1px solid #f1f5f9' }}>Notifications</div>
+                  {notifications.length === 0 ? <div style={{ padding: '20px', textAlign: 'center', color: '#94a3b8' }}>No alerts</div> :
+                    notifications.map(n => (
+                      <div key={n.id} style={{ padding: '12px', borderBottom: '1px solid #f1f5f9', fontSize: '13px' }}>
+                        <div>🚚 {n.message}</div>
+                        <div style={{ fontSize: '10px', color: '#94a3b8' }}>{formatTime(n.timestamp)}</div>
                       </div>
-                    ) : (
-                      notifications.map((n) => (
-                        <div
-                          key={n.id}
-                          className={`notif-item${!n.read ? " unread" : ""}`}
-                        >
-                          <div className="notif-icon">🚚</div>
-                          <div className="notif-body">
-                            <div className="notif-msg">{n.message}</div>
-                            <div className="notif-time">
-                              {formatTime(n.timestamp)}
-                            </div>
-                          </div>
-                          <button
-                            className="notif-dismiss"
-                            onClick={() => dismissNotification(n.id)}
-                            aria-label="Dismiss notification"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))
-                    )}
-                  </div>
+                    ))
+                  }
                 </div>
               )}
             </div>
+            <button className="btn" style={{ background: '#fee2e2', color: '#dc2626' }} onClick={() => { localStorage.clear(); navigate("/login"); }}>Logout</button>
+          </div>
+        </header>
 
-            <button className="btn btn-danger btn-sm" onClick={logout}>
-              ⎋ Logout
-            </button>
-          </div>
-        </div>
-
-        {/* ── ALERTS ── */}
-        {error && (
-          <div className="alert alert-error" role="alert">
-            <span className="alert-body">⚠ {error}</span>
-            <button
-              className="alert-dismiss"
-              onClick={() => setError("")}
-              aria-label="Dismiss"
-            >
-              ×
-            </button>
-          </div>
-        )}
-        {success && (
-          <div className="alert alert-success" role="status">
-            <span className="alert-body">{success}</span>
-            <button
-              className="alert-dismiss"
-              onClick={() => setSuccess("")}
-              aria-label="Dismiss"
-            >
-              ×
-            </button>
-          </div>
-        )}
-
-        {/* ── STATS ── */}
-        <div className="stats-bar">
-          <div className="stat-card">
-            <div className="stat-number" style={{ color: "#16a34a" }}>
-              {nearbyFood.length}
-            </div>
-            <div className="stat-label">Available</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-number" style={{ color: "#2563eb" }}>
-              {myFood.reserved.length}
-            </div>
-            <div className="stat-label">Reserved</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-number" style={{ color: "#ca8a04" }}>
-              {myFood.picked.length}
-            </div>
-            <div className="stat-label">Ready</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-number" style={{ color: "#64748b" }}>
-              {myFood.delivered.length}
-            </div>
-            <div className="stat-label">Delivered</div>
-          </div>
-        </div>
-
-        {/* ── TABS ── */}
-        <div className="tabs">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              className={`tab-btn${activeTab === tab.id ? " active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              <span>{tab.icon}</span>
-              <span>{tab.label}</span>
-              <span className="tab-count">{tab.count}</span>
+        <nav className="tab-bar">
+          {tabs.map(t => (
+            <button key={t.id} className={`tab-btn ${activeTab === t.id ? 'active' : ''}`} onClick={() => setActiveTab(t.id)}>
+              {t.icon} {t.label} ({t.count})
             </button>
           ))}
-        </div>
+        </nav>
 
-        {/* ══ TAB: AVAILABLE ══ */}
-        {activeTab === "nearby" && (
-          <div className="cards-grid">
-            {nearbyFood.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">🔍</div>
-                <p>No food available nearby right now.</p>
+        <main>
+          {activeTab === "nearby" && (
+            <>
+              <div className="map-container">
+                <MapContainer center={mapCenter} zoom={13} style={{ height: "100%", width: "100%" }}>
+                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                  <ChangeView center={mapCenter} />
+                  {nearbyFood.map(item => (
+                    item.location?.coordinates && (
+                      <Marker key={item._id} position={[item.location.coordinates[1], item.location.coordinates[0]]}>
+                        <Popup>
+                          <strong>{item.foodType}</strong><br />
+                          🏪 {item.restaurant?.name}<br />
+                          🌿 {item.freshnessScore}% Fresh<br />
+                          <button onClick={() => reserveFood(item._id)} style={{ marginTop: '8px', cursor:'pointer' }}>Reserve</button>
+                        </Popup>
+                      </Marker>
+                    )
+                  ))}
+                </MapContainer>
               </div>
-            ) : (
-              nearbyFood.map((item) => {
-                const score = item.freshnessScore ?? 0;
-                const freshColor = getFreshnessColor(score);
-                return (
+
+              {nearbyFood.length === 0 ? <p style={{textAlign:'center', padding:'40px'}}>No food nearby.</p> : 
+                nearbyFood.map(item => (
                   <div key={item._id} className="card">
-                    <div className="card-header">
-                      <div className="card-title">{item.foodType}</div>
-                      {/* Status + countdown together */}
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          flexWrap: "wrap",
-                          justifyContent: "flex-end",
-                        }}
-                      >
-                        {item.predictedExpiry && (
-                          <ExpiryCountdown
-                            predictedExpiry={item.predictedExpiry}
-                            now={now}
-                          />
-                        )}
-                        <span className="status-badge status-available">
-                          ● Available
-                        </span>
-                      </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
+                      <h3 style={{ fontSize: '16px' }}>{item.foodType}</h3>
+                      <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
                     </div>
+                    {/* FIXED: Now using getFreshnessColor here */}
                     <div className="freshness-bar">
-                      <div
-                        className="freshness-fill"
-                        style={{
-                          width: `${score}%`,
-                          background: freshColor,
-                        }}
-                      />
-                    </div>
-                    <div className="card-meta">
-                      <span className="meta-pill">
-                        📦 {item.quantity} units
-                      </span>
-                      <span
-                        className={`meta-pill${score >= 70 ? " fresh" : ""}`}
-                      >
-                        🌿 {score}% fresh
-                      </span>
-                      <span className="meta-pill">🧊 {item.storageType}</span>
-                      <span className="meta-pill">
-                        🏪 {item.restaurant?.name || "Unknown"}
-                      </span>
-                    </div>
-                    {item.restaurant?.email && (
-                      <div className="contact-box">
-                        📧 {item.restaurant.email}
-                      </div>
-                    )}
-                    <div className="card-actions">
-                      <button
-                        className="btn btn-primary"
-                        onClick={() => reserveFood(item._id)}
-                        disabled={!!actionLoading[item._id]}
-                      >
-                        {actionLoading[item._id] ? (
-                          <>
-                            <span className="btn-spinner" /> Reserving…
-                          </>
-                        ) : (
-                          <>＋ Reserve Food</>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-
-        {/* ══ TAB: RESERVED ══ */}
-        {activeTab === "reserved" && (
-          <div className="cards-grid">
-            {myFood.reserved.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">📦</div>
-                <p>No reserved food yet. Browse Available to reserve.</p>
-              </div>
-            ) : (
-              myFood.reserved.map((item) => (
-                <div key={item._id} className="card">
-                  <div className="card-header">
-                    <div className="card-title">{item.foodType}</div>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        flexWrap: "wrap",
-                        justifyContent: "flex-end",
-                      }}
-                    >
-                      {item.predictedExpiry && (
-                        <ExpiryCountdown
-                          predictedExpiry={item.predictedExpiry}
-                          now={now}
+                        <div 
+                          className="freshness-fill" 
+                          style={{ 
+                            width: `${item.freshnessScore}%`, 
+                            background: getFreshnessColor(item.freshnessScore) 
+                          }} 
                         />
-                      )}
-                      <span className="status-badge status-reserved">
-                        ● Reserved
-                      </span>
                     </div>
-                  </div>
-                  <div className="card-meta">
-                    <span className="meta-pill">📦 {item.quantity} units</span>
-                    <span className="meta-pill">
-                      🏪 {item.restaurant?.name || "Unknown"}
-                    </span>
-                  </div>
-                  {item.restaurant?.email && (
-                    <div className="contact-box">
-                      📧 {item.restaurant.email}
-                    </div>
-                  )}
-                  <div className="info-box">
-                    ⏳ Waiting for restaurant to confirm pickup. You'll be
-                    notified automatically.
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-
-        {/* ══ TAB: PICKED ══ */}
-        {activeTab === "picked" && (
-          <div className="cards-grid">
-            {myFood.picked.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">🚚</div>
-                <p>No food ready for delivery yet.</p>
-              </div>
-            ) : (
-              myFood.picked.map((item) => (
-                <div key={item._id} className="card">
-                  <div className="card-header">
-                    <div className="card-title">{item.foodType}</div>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        flexWrap: "wrap",
-                        justifyContent: "flex-end",
-                      }}
-                    >
-                      {item.predictedExpiry && (
-                        <ExpiryCountdown
-                          predictedExpiry={item.predictedExpiry}
-                          now={now}
-                        />
-                      )}
-                      <span className="status-badge status-picked">
-                        ● Ready to Deliver
-                      </span>
-                    </div>
-                  </div>
-                  <div className="card-meta">
-                    <span className="meta-pill">📦 {item.quantity} units</span>
-                    <span className="meta-pill">
-                      🏪 {item.restaurant?.name || "Unknown"}
-                    </span>
-                  </div>
-                  {item.restaurant?.email && (
-                    <div className="contact-box">
-                      📧 {item.restaurant.email}
-                    </div>
-                  )}
-                  <div className="card-actions">
-                    <button
-                      className="btn btn-action"
-                      onClick={() => markDelivered(item._id)}
-                      disabled={!!actionLoading[item._id]}
-                    >
-                      {actionLoading[item._id] ? (
-                        <>
-                          <span className="btn-spinner" /> Confirming…
-                        </>
-                      ) : (
-                        <>✓ Mark Delivered</>
-                      )}
+                    <p style={{ fontSize: '13px', color: '#475569', marginBottom: '15px' }}>
+                        📦 {item.quantity} units | 🌿 {item.freshnessScore}% Fresh | 🏪 {item.restaurant?.name || "Partner"}
+                    </p>
+                    <button className="btn btn-primary" onClick={() => reserveFood(item._id)} disabled={actionLoading[item._id]}>
+                        {actionLoading[item._id] ? "Reserving..." : "＋ Reserve Food"}
                     </button>
                   </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
+                ))
+              }
+            </>
+          )}
 
-        {/* ══ TAB: DELIVERED ══ */}
-        {activeTab === "delivered" && (
-          <div className="cards-grid">
-            {myFood.delivered.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">✅</div>
-                <p>No deliveries completed yet.</p>
-              </div>
-            ) : (
-              myFood.delivered.map((item) => (
-                <div key={item._id} className="card faded">
-                  <div className="card-header">
-                    <div className="card-title">{item.foodType}</div>
-                    <span className="status-badge status-delivered">
-                      ✓ Delivered
-                    </span>
-                  </div>
-                  <div className="card-meta">
-                    <span className="meta-pill">📦 {item.quantity} units</span>
-                    <span className="meta-pill">
-                      🏪 {item.restaurant?.name || "Unknown"}
-                    </span>
-                  </div>
-                  {item.deliveredAt && (
-                    <div className="delivered-time">
-                      🕐 Delivered on {formatDate(item.deliveredAt)}
-                    </div>
-                  )}
+          {activeTab === "reserved" && (
+            myFood.reserved.map(item => (
+              <div key={item._id} className="card">
+                <h3 style={{ fontSize: '16px' }}>{item.foodType}</h3>
+                <div style={{ background: '#fff7ed', padding: '12px', borderRadius: '10px', marginTop: '15px', fontSize: '13px', color: '#c2410c' }}>
+                    ⏳ Waiting for Restaurant pickup confirmation...
                 </div>
-              ))
-            )}
-          </div>
-        )}
+              </div>
+            ))
+          )}
+
+          {activeTab === "picked" && (
+            myFood.picked.map(item => (
+              <div key={item._id} className="card">
+                <h3 style={{ fontSize: '16px', marginBottom: '10px' }}>{item.foodType}</h3>
+                <button className="btn btn-action" onClick={() => markDelivered(item._id)} disabled={actionLoading[item._id]}>✓ Mark Delivered</button>
+              </div>
+            ))
+          )}
+
+          {activeTab === "delivered" && (
+            myFood.delivered.map(item => (
+              <div key={item._id} className="card" style={{ opacity: 0.8 }}>
+                <h3 style={{ fontSize: '15px' }}>{item.foodType}</h3>
+                <p style={{ fontSize: '11px', color: '#94a3b8', marginTop: '8px' }}>Completed: {formatDate(item.deliveredAt)}</p>
+              </div>
+            ))
+          )}
+        </main>
       </div>
     </>
   );

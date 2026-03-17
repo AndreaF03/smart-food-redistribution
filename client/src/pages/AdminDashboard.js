@@ -644,7 +644,7 @@ function AdminDashboard() {
                         {r.restaurantName || "Unknown Restaurant"}
                       </div>
                       <div className="leaderboard-meta">
-                        {r.totalDonations} donation{r.totalDonations !== 1 ? "s" : ""}
+                        {r.donationCount} donation{r.totalDonations !== 1 ? "s" : ""}
                       </div>
                       <div className="bar-track">
                         <div
