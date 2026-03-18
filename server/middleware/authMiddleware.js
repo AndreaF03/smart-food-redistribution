@@ -4,7 +4,7 @@ const User = require("../models/User");
 /* =========================
    Protect Route
 ========================= */
-exports.protect = async (req, res, next) => {
+const protect = async (req, res, next) => {
   try {
     let token;
 
@@ -15,51 +15,54 @@ exports.protect = async (req, res, next) => {
       token = req.headers.authorization.split(" ")[1];
     }
 
-    // Checking for token existence and a reasonable minimum length
     if (!token || token.length < 20) {
       return res.status(401).json({ message: "Not authorized, token missing or invalid" });
     }
 
-    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Fetch user (lean for speed, password excluded for security)
     const user = await User.findById(decoded.id).select("-password").lean();
 
     if (!user) {
-      return res.status(401).json({ message: "The user belonging to this token no longer exists" });
+      return res.status(401).json({ message: "User no longer exists" });
     }
 
-    /* Check if password changed after token was issued */
     if (user.passwordChangedAt) {
       const changedTimestamp = parseInt(user.passwordChangedAt.getTime() / 1000, 10);
-      
-      // If token issued time (iat) is less than password change time
       if (decoded.iat < changedTimestamp) {
         return res.status(401).json({
-          message: "User recently changed password! Please log in again."
+          message: "Password recently changed. Please log in again."
         });
       }
     }
 
-    // Attach user to the request object
     req.user = user;
     next();
   } catch (error) {
     console.error("AUTH ERROR:", error.name, error.message);
 
     if (error.name === "TokenExpiredError") {
-      return res.status(401).json({ message: "Session expired, please log in again" });
+      return res.status(401).json({ message: "Session expired" });
     }
-    
-    return res.status(401).json({ message: "Not authorized, token failed" });
+
+    return res.status(401).json({ message: "Not authorized" });
   }
+};
+
+/* =========================
+   Admin Only
+========================= */
+const adminOnly = (req, res, next) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ message: "Admin access only" });
+  }
+  next();
 };
 
 /* =========================
    Role Authorization
 ========================= */
-exports.authorizeRoles = (...roles) => {
+const authorizeRoles = (...roles) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ message: "Authentication required" });
@@ -67,10 +70,17 @@ exports.authorizeRoles = (...roles) => {
 
     if (!roles.includes(req.user.role)) {
       return res.status(403).json({
-        message: `Role (${req.user.role}) is not authorized to access this resource`
+        message: `Role (${req.user.role}) not allowed`
       });
     }
 
     next();
   };
+};
+
+
+module.exports = {
+  protect,
+  adminOnly,
+  authorizeRoles
 };

@@ -6,7 +6,6 @@ import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-// Fix Leaflet Marker Icons
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
 
@@ -21,23 +20,23 @@ L.Marker.prototype.options.icon = DefaultIcon;
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || "http://localhost:5000";
 
 /* ============================================================
-   MODULE-LEVEL HELPERS
+   HELPERS
 ============================================================ */
 const formatTime = (timestamp) =>
   new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-// FIXED: Now being used in the UI
 const getFreshnessColor = (score) => {
   const s = score ?? 0;
-  if (s >= 70) return "#16a34a";
-  if (s >= 40) return "#ca8a04";
-  return "#dc2626";
+  if (s >= 70) return "var(--fresh)";
+  if (s >= 40) return "var(--warn)";
+  return "var(--danger)";
 };
 
 const formatDate = (dateStr) => {
   if (!dateStr) return "—";
   return new Date(dateStr).toLocaleDateString("en-IN", {
-    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+    day: "numeric", month: "short", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
   });
 };
 
@@ -51,7 +50,7 @@ const computeCountdown = (predictedExpiry, nowMs) => {
   const secs = totalSecs % 60;
   const urgent = diffMs < 30 * 60 * 1000;
   if (hours > 0) return { label: `${hours}h ${mins}m`, urgent, expired: false };
-  return { label: `${String(mins).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`, urgent, expired: false };
+  return { label: `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`, urgent, expired: false };
 };
 
 /* ============================================================
@@ -69,9 +68,12 @@ function useNow() {
 const ExpiryCountdown = ({ predictedExpiry, now }) => {
   const cd = computeCountdown(predictedExpiry, now);
   if (!cd) return null;
+  if (cd.expired)
+    return <span className="expiry-pill expired">⚠ Expired</span>;
   return (
-    <span className={`expiry-pill ${cd.urgent ? "expiry-urgent" : ""} ${cd.expired ? "expiry-expired" : ""}`}>
-      {cd.expired ? "⚠ Expired" : `⏱ ${cd.label}`}
+    <span className={`expiry-pill ${cd.urgent ? "urgent" : ""}`}>
+      <span className="expiry-icon">⏱</span>
+      {cd.label}
     </span>
   );
 };
@@ -100,9 +102,23 @@ function NGODashboard() {
   const [success, setSuccess] = useState("");
   const [activeTab, setActiveTab] = useState("nearby");
   const [actionLoading, setActionLoading] = useState({});
-  const [notifications, setNotifications] = useState([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [foodTypeFilter, setFoodTypeFilter] = useState("all");
+  const [storageFilter, setStorageFilter] = useState("all");
+  const [freshnessFilter, setFreshnessFilter] = useState(0);
   const [showNotifications, setShowNotifications] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
+
+  const userId = localStorage.getItem("userId") || "guest";
+  const storageKey = `notifications_${userId}_ngo`;
+
+  const [notifications, setNotifications] = useState(() => {
+    const saved = localStorage.getItem(storageKey);
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [unreadCount, setUnreadCount] = useState(() => {
+    const saved = localStorage.getItem(`${storageKey}_unread`);
+    return saved ? JSON.parse(saved) : 0;
+  });
 
   const mapCenter = useMemo(() => [12.9716, 77.5946], []);
 
@@ -126,31 +142,55 @@ function NGODashboard() {
   useEffect(() => { fetchDataRef.current = fetchData; fetchData(); }, [fetchData]);
 
   useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify(notifications));
+  }, [notifications, storageKey]);
+
+  useEffect(() => {
+    localStorage.setItem(`${storageKey}_unread`, JSON.stringify(unreadCount));
+  }, [unreadCount, storageKey]);
+
+  useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) return;
-    socketRef.current = io(SOCKET_URL, { auth: { token }, transports: ["websocket"] });
+    socketRef.current = io(SOCKET_URL, { auth: { token }, transports: ["websocket", "polling"] });
     const handleNotification = (data) => {
-  setNotifications(prev => [
-    { ...data, id: Date.now(), read: false },
-    ...prev
-  ]);
-  setUnreadCount(c => c + 1);
-
-  if (fetchDataRef.current) {
-    fetchDataRef.current(true);
-  }
-};
-
-socketRef.current.on("food_reserved", handleNotification);
-socketRef.current.on("food_picked", handleNotification);
-socketRef.current.on("food_delivered", handleNotification);
+      setNotifications(prev => [
+        { ...data, id: Date.now(), read: false, timestamp: new Date().toISOString() },
+        ...prev,
+      ].slice(0, 50));
+      setUnreadCount(c => c + 1);
+      if (fetchDataRef.current) fetchDataRef.current(true);
+    };
+    socketRef.current.on("food_reserved", handleNotification);
+    socketRef.current.on("food_picked", handleNotification);
+    socketRef.current.on("food_delivered", handleNotification);
     return () => {
-  socketRef.current?.off("food_reserved");
-  socketRef.current?.off("food_picked");
-  socketRef.current?.off("food_delivered");
-  socketRef.current?.disconnect();
-};
+      socketRef.current?.off("food_reserved");
+      socketRef.current?.off("food_picked");
+      socketRef.current?.off("food_delivered");
+      socketRef.current?.disconnect();
+    };
   }, []);
+
+  const downloadCSV = (data, filename = "export.csv") => {
+    if (!data || data.length === 0) { alert("No data to export"); return; }
+    const headers = ["Food Type", "Quantity", "Status", "Freshness (%)", "Storage", "Restaurant", "Created At", "Delivered At"];
+    const rows = data.map(item => [
+      item.foodType, item.quantity, item.status, item.freshnessScore,
+      item.storageType, item.restaurant?.name || "—",
+      new Date(item.createdAt).toLocaleString(),
+      item.deliveredAt ? new Date(item.deliveredAt).toLocaleString() : "—",
+    ]);
+    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const reserveFood = async (id) => {
     setActionLoading(p => ({ ...p, [id]: true }));
@@ -179,156 +219,749 @@ socketRef.current.on("food_delivered", handleNotification);
     { id: "delivered", label: "History", icon: "✅", count: myFood.delivered.length },
   ], [nearbyFood.length, myFood]);
 
-  if (loading) return <div style={{ textAlign: 'center', marginTop: '50px' }}>Loading NGO Dashboard...</div>;
+  const filteredNearbyFood = useMemo(() => {
+    return nearbyFood.filter(item => {
+      const matchesSearch =
+        item.foodType?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        item.restaurant?.name?.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesFoodType = foodTypeFilter === "all" || item.foodType === foodTypeFilter;
+      const matchesStorage = storageFilter === "all" || item.storageType === storageFilter;
+      const matchesFreshness = item.freshnessScore >= freshnessFilter;
+      return matchesSearch && matchesFoodType && matchesStorage && matchesFreshness;
+    });
+  }, [nearbyFood, searchTerm, foodTypeFilter, storageFilter, freshnessFilter]);
+
+  if (loading) {
+    return (
+      <>
+        <style>{CSS}</style>
+        <div className="loading-screen">
+          <div className="loading-leaf">🌱</div>
+          <p className="loading-text">Loading Dashboard…</p>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
-      <style>{`
-        .ngo-dashboard { max-width: 900px; margin: 0 auto; padding: 20px; font-family: 'DM Sans', sans-serif; background: #f1f5f9; min-height: 100vh; }
-        .ngo-header { display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 18px 24px; border-radius: 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
-        .refresh-dot { display: inline-block; width: 8px; height: 8px; background-color: #22c55e; border-radius: 50%; margin-left: 10px; animation: pulse-green 2s infinite; }
-        .notif-bell { position: relative; width: 42px; height: 42px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; cursor: pointer; font-size: 20px; }
-        .notif-badge { position: absolute; top: -5px; right: -5px; background: #ef4444; color: #fff; font-size: 10px; font-weight: 700; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 2px solid #fff; }
-        .notif-dropdown { position: absolute; top: 55px; right: 0; width: 300px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); z-index: 1000; overflow: hidden; }
-        .tab-bar { display: flex; gap: 8px; background: #fff; padding: 8px; border-radius: 12px; border: 1px solid #e2e8f0; margin-bottom: 20px; }
-        .tab-btn { flex: 1; padding: 10px; border: none; border-radius: 8px; cursor: pointer; background: none; color: #64748b; font-weight: 500; font-size: 13px; transition: 0.2s; }
-        .tab-btn.active { background: #0f172a; color: #fff; }
-        .card { background: #fff; border-radius: 16px; padding: 20px; margin-bottom: 12px; border: 1px solid #e2e8f0; }
-        .freshness-bar { height: 6px; background: #e2e8f0; border-radius: 3px; margin: 10px 0; overflow: hidden; }
-        .freshness-fill { height: 100%; transition: width 0.5s ease; }
-        .expiry-pill { font-family: 'DM Mono'; font-size: 12px; padding: 4px 10px; border-radius: 20px; background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; font-weight: 600; }
-        .expiry-urgent { background: #fff1f2; color: #e11d48; border-color: #fecdd3; animation: blink 1s infinite; }
-        .btn { padding: 9px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; border: none; font-size: 13.5px; transition: 0.2s; }
-        .map-container { height: 350px; width: 100%; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0; margin-bottom: 20px; }
-        .alert { padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; display: flex; justify-content: space-between; }
-        @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } }
-        @keyframes blink { 50% { opacity: 0.6; } }
-      `}</style>
+      <style>{CSS}</style>
+      <div className="ngo-root">
 
-      <div className="ngo-dashboard">
-        {success && <div className="alert" style={{background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0'}}>{success} <button onClick={() => setSuccess("")} style={{background:'none', border:'none'}}>×</button></div>}
-        {error && <div className="alert" style={{background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca'}}>{error} <button onClick={() => setError("")} style={{background:'none', border:'none'}}>×</button></div>}
-
-        <header className="ngo-header">
-          <div>
-            <h1 style={{ fontSize: '20px' }}>NGO Dashboard 🌱 {refreshing && <span className="refresh-dot" />}</h1>
-            <p style={{ color: '#64748b', fontSize: '13px' }}>Smart Food Redistribution</p>
+        {/* ── SIDEBAR ─────────────────────────── */}
+        <aside className="sidebar">
+          <div className="sidebar-brand">
+            <span className="brand-icon">🌿</span>
+            <span className="brand-name">FoodBridge</span>
           </div>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-            <button className="btn" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569' }} onClick={() => fetchData(true)} disabled={refreshing}>↻ Refresh</button>
-            <div style={{ position: 'relative' }} ref={notifRef}>
-              <button className="notif-bell" onClick={() => { setShowNotifications(!showNotifications); setUnreadCount(0); }}>
-                🔔 {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
+
+          <nav className="sidebar-nav">
+            {tabs.map(t => (
+              <button
+                key={t.id}
+                className={`nav-item ${activeTab === t.id ? "active" : ""}`}
+                onClick={() => setActiveTab(t.id)}
+              >
+                <span className="nav-icon">{t.icon}</span>
+                <span className="nav-label">{t.label}</span>
+                <span className="nav-count">{t.count}</span>
               </button>
-              {showNotifications && (
-                <div className="notif-dropdown">
-                  <div style={{ padding: '12px', fontWeight: '700', borderBottom: '1px solid #f1f5f9' }}>Notifications</div>
-                  {notifications.length === 0 ? <div style={{ padding: '20px', textAlign: 'center', color: '#94a3b8' }}>No alerts</div> :
-                    notifications.map(n => (
-                      <div key={n.id} style={{ padding: '12px', borderBottom: '1px solid #f1f5f9', fontSize: '13px' }}>
-                        <div>🚚 {n.message}</div>
-                        <div style={{ fontSize: '10px', color: '#94a3b8' }}>{formatTime(n.timestamp)}</div>
-                      </div>
-                    ))
-                  }
-                </div>
-              )}
-            </div>
-            <button className="btn" style={{ background: '#fee2e2', color: '#dc2626' }} onClick={() => { localStorage.clear(); navigate("/login"); }}>Logout</button>
-          </div>
-        </header>
+            ))}
+          </nav>
 
-        <nav className="tab-bar">
-          {tabs.map(t => (
-            <button key={t.id} className={`tab-btn ${activeTab === t.id ? 'active' : ''}`} onClick={() => setActiveTab(t.id)}>
-              {t.icon} {t.label} ({t.count})
+          <div className="sidebar-footer">
+            <button className="sidebar-btn logout" onClick={() => { localStorage.clear(); navigate("/login"); }}>
+              <span>⎋</span> Sign Out
             </button>
-          ))}
-        </nav>
+          </div>
+        </aside>
 
-        <main>
-          {activeTab === "nearby" && (
-            <>
-              <div className="map-container">
-                <MapContainer center={mapCenter} zoom={13} style={{ height: "100%", width: "100%" }}>
-                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                  <ChangeView center={mapCenter} />
-                  {nearbyFood.map(item => (
-                    item.location?.coordinates && (
-                      <Marker key={item._id} position={[item.location.coordinates[1], item.location.coordinates[0]]}>
-                        <Popup>
-                          <strong>{item.foodType}</strong><br />
-                          🏪 {item.restaurant?.name}<br />
-                          🌿 {item.freshnessScore}% Fresh<br />
-                          <button onClick={() => reserveFood(item._id)} style={{ marginTop: '8px', cursor:'pointer' }}>Reserve</button>
-                        </Popup>
-                      </Marker>
-                    )
-                  ))}
-                </MapContainer>
-              </div>
+        {/* ── MAIN ────────────────────────────── */}
+        <div className="main-area">
 
-              {nearbyFood.length === 0 ? <p style={{textAlign:'center', padding:'40px'}}>No food nearby.</p> : 
-                nearbyFood.map(item => (
-                  <div key={item._id} className="card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-                      <h3 style={{ fontSize: '16px' }}>{item.foodType}</h3>
-                      <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
+          {/* ── TOPBAR ── */}
+          <header className="topbar">
+            <div className="topbar-left">
+              <h1 className="page-title">
+                {tabs.find(t => t.id === activeTab)?.label}
+                {refreshing && <span className="live-dot" title="Syncing…" />}
+              </h1>
+              <p className="page-sub">Smart food redistribution · Bengaluru</p>
+            </div>
+            <div className="topbar-actions">
+              <button
+                className="action-btn export"
+                onClick={() => downloadCSV(nearbyFood, `ngo_food_${new Date().toISOString().slice(0, 10)}.csv`)}
+              >
+                ⬇ Export
+              </button>
+              <button className="action-btn" onClick={() => fetchData(true)} disabled={refreshing}>
+                ↻ Refresh
+              </button>
+
+              {/* Notifications */}
+              <div className="notif-wrap" ref={notifRef}>
+                <button
+                  className="notif-btn"
+                  onClick={() => {
+                    setShowNotifications(s => !s);
+                    setUnreadCount(0);
+                    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                  }}
+                >
+                  🔔
+                  {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
+                </button>
+                {showNotifications && (
+                  <div className="notif-panel">
+                    <div className="notif-header">
+                      <span>Notifications</span>
+                      <button className="notif-close" onClick={() => setShowNotifications(false)}>×</button>
                     </div>
-                    {/* FIXED: Now using getFreshnessColor here */}
-                    <div className="freshness-bar">
-                        <div 
-                          className="freshness-fill" 
-                          style={{ 
-                            width: `${item.freshnessScore}%`, 
-                            background: getFreshnessColor(item.freshnessScore) 
-                          }} 
-                        />
+                    <div className="notif-list">
+                      {notifications.length === 0
+                        ? <div className="notif-empty">All clear — no alerts</div>
+                        : notifications.map(n => (
+                          <div key={n.id} className={`notif-item ${n.read ? "" : "unread"}`}>
+                            <span className="notif-msg">🚚 {n.message}</span>
+                            <span className="notif-time">{formatTime(n.timestamp)}</span>
+                          </div>
+                        ))
+                      }
                     </div>
-                    <p style={{ fontSize: '13px', color: '#475569', marginBottom: '15px' }}>
-                        📦 {item.quantity} units | 🌿 {item.freshnessScore}% Fresh | 🏪 {item.restaurant?.name || "Partner"}
-                    </p>
-                    <button className="btn btn-primary" onClick={() => reserveFood(item._id)} disabled={actionLoading[item._id]}>
-                        {actionLoading[item._id] ? "Reserving..." : "＋ Reserve Food"}
-                    </button>
                   </div>
-                ))
-              }
-            </>
+                )}
+              </div>
+            </div>
+          </header>
+
+          {/* ── ALERTS ── */}
+          {success && (
+            <div className="flash success">
+              <span>{success}</span>
+              <button onClick={() => setSuccess("")}>×</button>
+            </div>
+          )}
+          {error && (
+            <div className="flash error">
+              <span>{error}</span>
+              <button onClick={() => setError("")}>×</button>
+            </div>
           )}
 
-          {activeTab === "reserved" && (
-            myFood.reserved.map(item => (
-              <div key={item._id} className="card">
-                <h3 style={{ fontSize: '16px' }}>{item.foodType}</h3>
-                <div style={{ background: '#fff7ed', padding: '12px', borderRadius: '10px', marginTop: '15px', fontSize: '13px', color: '#c2410c' }}>
-                    ⏳ Waiting for Restaurant pickup confirmation...
+          {/* ── CONTENT ── */}
+          <main className="content">
+
+            {/* ══ NEARBY TAB ══ */}
+            {activeTab === "nearby" && (
+              <div className="tab-panel">
+                {/* Filter bar */}
+                <div className="filter-bar">
+                  <div className="search-wrap">
+                    <span className="search-icon">⌕</span>
+                    <input
+                      className="search-input"
+                      type="text"
+                      placeholder="Search food or restaurant…"
+                      value={searchTerm}
+                      onChange={e => setSearchTerm(e.target.value)}
+                    />
+                  </div>
+                  <div className="filter-selects">
+                    <select className="filter-select" value={foodTypeFilter} onChange={e => setFoodTypeFilter(e.target.value)}>
+                      <option value="all">All Food</option>
+                      <option value="veg">🥦 Veg</option>
+                      <option value="non-veg">🍗 Non-Veg</option>
+                    </select>
+                    <select className="filter-select" value={storageFilter} onChange={e => setStorageFilter(e.target.value)}>
+                      <option value="all">All Storage</option>
+                      <option value="room">🌡 Room Temp</option>
+                      <option value="refrigerated">❄ Refrigerated</option>
+                    </select>
+                    <select className="filter-select" value={freshnessFilter} onChange={e => setFreshnessFilter(Number(e.target.value))}>
+                      <option value={0}>Any Freshness</option>
+                      <option value={70}>70%+ Fresh</option>
+                      <option value={50}>50%+ Fresh</option>
+                      <option value={30}>30%+ Fresh</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
 
-          {activeTab === "picked" && (
-            myFood.picked.map(item => (
-              <div key={item._id} className="card">
-                <h3 style={{ fontSize: '16px', marginBottom: '10px' }}>{item.foodType}</h3>
-                <button className="btn btn-action" onClick={() => markDelivered(item._id)} disabled={actionLoading[item._id]}>✓ Mark Delivered</button>
-              </div>
-            ))
-          )}
+                {/* Map */}
+                <div className="map-shell">
+                  <MapContainer center={mapCenter} zoom={13} style={{ height: "100%", width: "100%" }}>
+                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                    <ChangeView center={mapCenter} />
+                    {filteredNearbyFood.map(item =>
+                      item.location?.coordinates && (
+                        <Marker key={item._id} position={[item.location.coordinates[1], item.location.coordinates[0]]}>
+                          <Popup>
+                            <strong>{item.foodType}</strong><br />
+                            🏪 {item.restaurant?.name}<br />
+                            🌿 {item.freshnessScore}% Fresh<br />
+                            <button onClick={() => reserveFood(item._id)} style={{ marginTop: 8, cursor: "pointer" }}>Reserve</button>
+                          </Popup>
+                        </Marker>
+                      )
+                    )}
+                  </MapContainer>
+                </div>
 
-          {activeTab === "delivered" && (
-            myFood.delivered.map(item => (
-              <div key={item._id} className="card" style={{ opacity: 0.8 }}>
-                <h3 style={{ fontSize: '15px' }}>{item.foodType}</h3>
-                <p style={{ fontSize: '11px', color: '#94a3b8', marginTop: '8px' }}>Completed: {formatDate(item.deliveredAt)}</p>
+                {/* Cards */}
+                <div className="result-meta">
+                  {filteredNearbyFood.length} listing{filteredNearbyFood.length !== 1 ? "s" : ""}
+                </div>
+                {filteredNearbyFood.length === 0
+                  ? <EmptyState icon="🍽" message="No food matches your filters." />
+                  : (
+                    <div className="card-grid">
+                      {filteredNearbyFood.map((item, i) => (
+                        <FoodCard
+                          key={item._id}
+                          item={item}
+                          now={now}
+                          actionLoading={actionLoading}
+                          onReserve={reserveFood}
+                          style={{ animationDelay: `${i * 0.05}s` }}
+                        />
+                      ))}
+                    </div>
+                  )
+                }
               </div>
-            ))
-          )}
-        </main>
+            )}
+
+            {/* ══ RESERVED TAB ══ */}
+            {activeTab === "reserved" && (
+              <div className="tab-panel">
+                {myFood.reserved.length === 0
+                  ? <EmptyState icon="📦" message="Nothing reserved yet." />
+                  : (
+                    <div className="card-grid">
+                      {myFood.reserved.map(item => (
+                        <div key={item._id} className="card status-card">
+                          <div className="card-type">{item.foodType}</div>
+                          <div className="pending-banner">
+                            <span className="pending-dot" />
+                            Awaiting restaurant pickup confirmation
+                          </div>
+                          <div className="card-meta-row">
+                            <span>📦 {item.quantity} units</span>
+                            <span>🏪 {item.restaurant?.name || "Partner"}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                }
+              </div>
+            )}
+
+            {/* ══ PICKED TAB ══ */}
+            {activeTab === "picked" && (
+              <div className="tab-panel">
+                {myFood.picked.length === 0
+                  ? <EmptyState icon="🚚" message="No items ready to deliver." />
+                  : (
+                    <div className="card-grid">
+                      {myFood.picked.map(item => (
+                        <div key={item._id} className="card status-card">
+                          <div className="card-type">{item.foodType}</div>
+                          <div className="card-meta-row">
+                            <span>📦 {item.quantity} units</span>
+                            <span>🏪 {item.restaurant?.name || "Partner"}</span>
+                          </div>
+                          <button
+                            className="cta-btn deliver"
+                            onClick={() => markDelivered(item._id)}
+                            disabled={actionLoading[item._id]}
+                          >
+                            {actionLoading[item._id] ? "Updating…" : "✓ Mark Delivered"}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                }
+              </div>
+            )}
+
+            {/* ══ HISTORY TAB ══ */}
+            {activeTab === "delivered" && (
+              <div className="tab-panel">
+                {myFood.delivered.length === 0
+                  ? <EmptyState icon="✅" message="No deliveries yet." />
+                  : (
+                    <div className="history-list">
+                      {myFood.delivered.map((item, i) => (
+                        <div key={item._id} className="history-row" style={{ animationDelay: `${i * 0.04}s` }}>
+                          <div className="history-check">✓</div>
+                          <div className="history-info">
+                            <span className="history-type">{item.foodType}</span>
+                            <span className="history-qty">· {item.quantity} units</span>
+                          </div>
+                          <div className="history-date">{formatDate(item.deliveredAt)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                }
+              </div>
+            )}
+
+          </main>
+        </div>
       </div>
     </>
   );
 }
+
+/* ============================================================
+   FOOD CARD SUB-COMPONENT
+============================================================ */
+function FoodCard({ item, now, actionLoading, onReserve, style }) {
+  const score = item.freshnessScore ?? 0;
+  const color = getFreshnessColor(score);
+  return (
+    <div className="card food-card" style={style}>
+      {item.image && (
+        <div className="card-img-wrap">
+          <img src={item.image} alt={item.foodType} className="card-img" />
+          <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
+        </div>
+      )}
+      {!item.image && (
+        <div className="card-no-img">
+          <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
+        </div>
+      )}
+
+      <div className="card-body">
+        <div className="card-title-row">
+          <h3 className="card-type">{item.foodType}</h3>
+          <span className="freshness-label" style={{ color }}>
+            {score}%
+          </span>
+        </div>
+
+        <div className="freshness-track">
+          <div
+            className="freshness-fill"
+            style={{ width: `${score}%`, background: color }}
+          />
+        </div>
+
+        <div className="card-meta-row">
+          <span>📦 {item.quantity} units</span>
+          <span>🏪 {item.restaurant?.name || "Partner"}</span>
+          {item.storageType && (
+            <span>{item.storageType === "refrigerated" ? "❄" : "🌡"} {item.storageType}</span>
+          )}
+        </div>
+
+        <button
+          className="cta-btn reserve"
+          onClick={() => onReserve(item._id)}
+          disabled={actionLoading[item._id]}
+        >
+          {actionLoading[item._id] ? (
+            <span className="btn-spinner" />
+          ) : (
+            "＋ Reserve Food"
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   EMPTY STATE
+============================================================ */
+function EmptyState({ icon, message }) {
+  return (
+    <div className="empty-state">
+      <div className="empty-icon">{icon}</div>
+      <p>{message}</p>
+    </div>
+  );
+}
+
+/* ============================================================
+   CSS
+============================================================ */
+const CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0e100f;
+    --surface:  #161a18;
+    --surface2: #1e2420;
+    --border:   #2a3028;
+    --text:     #e8ede9;
+    --muted:    #7a8c7e;
+    --accent:   #5fd475;
+    --accent2:  #a8f0b4;
+    --fresh:    #5fd475;
+    --warn:     #f0b429;
+    --danger:   #f05252;
+    --info:     #60b4f0;
+    --sidebar-w: 220px;
+    --radius:   14px;
+    --font-display: 'Syne', sans-serif;
+    --font-body:    'Instrument Sans', sans-serif;
+    --font-mono:    'DM Mono', monospace;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: var(--font-body); }
+
+  /* ── LOADING ── */
+  .loading-screen {
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; background: var(--bg); gap: 16px;
+  }
+  .loading-leaf { font-size: 48px; animation: spin 2s linear infinite; }
+  .loading-text { font-family: var(--font-mono); color: var(--muted); font-size: 14px; letter-spacing: .1em; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── ROOT LAYOUT ── */
+  .ngo-root {
+    display: flex; min-height: 100vh;
+  }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    width: var(--sidebar-w);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 24px 0;
+    position: fixed; top: 0; left: 0; height: 100vh;
+    z-index: 100;
+  }
+
+  .sidebar-brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 20px 28px;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand-icon { font-size: 22px; }
+  .brand-name { font-family: var(--font-display); font-weight: 800; font-size: 17px; letter-spacing: -.01em; color: var(--accent2); }
+
+  .sidebar-nav { display: flex; flex-direction: column; gap: 4px; padding: 20px 12px; flex: 1; }
+
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 12px; border-radius: 10px;
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    transition: background .15s, color .15s;
+    text-align: left; width: 100%;
+  }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: var(--accent); color: #0a120b; font-weight: 600; }
+  .nav-item.active .nav-count { background: rgba(0,0,0,.15); color: #0a120b; }
+  .nav-icon { font-size: 16px; flex-shrink: 0; }
+  .nav-label { flex: 1; }
+  .nav-count {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+    background: var(--surface2); color: var(--muted);
+    padding: 2px 7px; border-radius: 20px;
+  }
+
+  .sidebar-footer { padding: 16px 12px 0; border-top: 1px solid var(--border); margin-top: auto; }
+  .sidebar-btn {
+    width: 100%; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--border); background: none;
+    color: var(--muted); font-family: var(--font-body); font-size: 13px;
+    cursor: pointer; display: flex; align-items: center; gap: 8px;
+    transition: .15s;
+  }
+  .sidebar-btn.logout:hover { background: rgba(240,82,82,.12); color: var(--danger); border-color: var(--danger); }
+
+  /* ── MAIN AREA ── */
+  .main-area {
+    margin-left: var(--sidebar-w);
+    flex: 1; display: flex; flex-direction: column;
+    min-width: 0;
+  }
+
+  /* ── TOPBAR ── */
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 22px 32px; background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 50;
+  }
+  .page-title {
+    font-family: var(--font-display); font-size: 22px; font-weight: 700;
+    display: flex; align-items: center; gap: 10px; color: var(--text);
+  }
+  .page-sub { font-size: 12px; color: var(--muted); margin-top: 2px; font-family: var(--font-mono); letter-spacing: .04em; }
+
+  .live-dot {
+    display: inline-block; width: 8px; height: 8px;
+    background: var(--accent); border-radius: 50%;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(95,212,117,.5); }
+    50%      { box-shadow: 0 0 0 8px rgba(95,212,117,0); }
+  }
+
+  .topbar-actions { display: flex; align-items: center; gap: 10px; }
+
+  .action-btn {
+    padding: 9px 16px; border-radius: 9px;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--muted); font-family: var(--font-body); font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: .15s;
+  }
+  .action-btn:hover { color: var(--text); border-color: var(--muted); }
+  .action-btn.export { background: rgba(95,212,117,.12); color: var(--accent); border-color: rgba(95,212,117,.3); }
+  .action-btn.export:hover { background: rgba(95,212,117,.2); }
+
+  /* ── NOTIFICATIONS ── */
+  .notif-wrap { position: relative; }
+  .notif-btn {
+    position: relative; width: 40px; height: 40px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; cursor: pointer; font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+    transition: .15s;
+  }
+  .notif-btn:hover { border-color: var(--muted); }
+  .notif-badge {
+    position: absolute; top: -5px; right: -5px;
+    background: var(--danger); color: #fff;
+    font-size: 9px; font-weight: 700; font-family: var(--font-mono);
+    width: 17px; height: 17px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%; border: 2px solid var(--surface);
+  }
+  .notif-panel {
+    position: absolute; top: 50px; right: 0;
+    width: 300px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 20px 50px rgba(0,0,0,.5);
+    overflow: hidden; z-index: 200;
+    animation: slideDown .15s ease;
+  }
+  @keyframes slideDown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  .notif-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 16px; font-family: var(--font-display); font-weight: 700; font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  .notif-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; }
+  .notif-list { max-height: 280px; overflow-y: auto; }
+  .notif-item {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .notif-item.unread { background: rgba(95,212,117,.05); }
+  .notif-msg { font-size: 13px; color: var(--text); }
+  .notif-time { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+  .notif-empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px; font-family: var(--font-mono); }
+
+  /* ── FLASH ── */
+  .flash {
+    margin: 16px 32px 0;
+    padding: 12px 16px; border-radius: 10px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 14px; font-weight: 500;
+    animation: slideDown .2s ease;
+  }
+  .flash button { background: none; border: none; cursor: pointer; font-size: 18px; opacity: .7; }
+  .flash.success { background: rgba(95,212,117,.12); color: var(--accent); border: 1px solid rgba(95,212,117,.25); }
+  .flash.error   { background: rgba(240,82,82,.12);  color: var(--danger); border: 1px solid rgba(240,82,82,.25); }
+
+  /* ── CONTENT ── */
+  .content { padding: 28px 32px; flex: 1; }
+
+  .tab-panel { animation: fadeUp .2s ease both; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  /* ── FILTERS ── */
+  .filter-bar {
+    display: flex; gap: 12px; align-items: center;
+    flex-wrap: wrap; margin-bottom: 18px;
+  }
+  .search-wrap {
+    flex: 1; min-width: 200px;
+    display: flex; align-items: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0 14px; gap: 8px;
+    transition: border-color .15s;
+  }
+  .search-wrap:focus-within { border-color: var(--accent); }
+  .search-icon { color: var(--muted); font-size: 18px; }
+  .search-input {
+    flex: 1; background: none; border: none; outline: none;
+    color: var(--text); font-family: var(--font-body); font-size: 14px;
+    padding: 11px 0;
+  }
+  .search-input::placeholder { color: var(--muted); }
+
+  .filter-selects { display: flex; gap: 8px; flex-wrap: wrap; }
+  .filter-select {
+    padding: 10px 14px; border-radius: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--font-body); font-size: 13px;
+    cursor: pointer; outline: none; transition: .15s;
+  }
+  .filter-select:focus { border-color: var(--accent); }
+
+  /* ── MAP ── */
+  .map-shell {
+    height: 300px; border-radius: var(--radius);
+    overflow: hidden; border: 1px solid var(--border);
+    margin-bottom: 20px;
+  }
+
+  /* ── RESULT META ── */
+  .result-meta {
+    font-family: var(--font-mono); font-size: 12px; color: var(--muted);
+    margin-bottom: 14px; letter-spacing: .04em;
+  }
+
+  /* ── CARD GRID ── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+  }
+
+  /* ── CARD ── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+    animation: fadeUp .3s ease both;
+    transition: border-color .2s, transform .2s;
+  }
+  .card:hover { border-color: var(--border); transform: translateY(-2px); }
+
+  .card-img-wrap { position: relative; }
+  .card-img { width: 100%; height: 160px; object-fit: cover; display: block; }
+  .card-no-img { padding: 16px 16px 0; display: flex; justify-content: flex-end; }
+
+  /* position expiry over image */
+  .card-img-wrap .expiry-pill {
+    position: absolute; top: 10px; right: 10px;
+  }
+
+  .card-body { padding: 14px 16px 16px; }
+  .card-title-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .card-type { font-family: var(--font-display); font-size: 15px; font-weight: 700; color: var(--text); }
+
+  .freshness-label { font-family: var(--font-mono); font-size: 13px; font-weight: 500; }
+
+  .freshness-track {
+    height: 4px; background: var(--surface2); border-radius: 99px;
+    margin-bottom: 12px; overflow: hidden;
+  }
+  .freshness-fill { height: 100%; border-radius: 99px; transition: width .5s ease; }
+
+  .card-meta-row {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 12px; color: var(--muted); margin-bottom: 14px;
+    font-family: var(--font-mono);
+  }
+
+  /* status card (reserved / picked) */
+  .status-card .card-body,
+  .status-card { padding: 18px 20px; }
+
+  .pending-banner {
+    margin: 10px 0 12px;
+    padding: 10px 14px; border-radius: 9px;
+    background: rgba(240,180,41,.08); color: var(--warn);
+    border: 1px solid rgba(240,180,41,.2);
+    font-size: 13px; display: flex; align-items: center; gap: 8px;
+  }
+  .pending-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--warn); flex-shrink: 0;
+    animation: pulse 1.5s infinite;
+  }
+
+  /* ── CTA BUTTONS ── */
+  .cta-btn {
+    width: 100%; padding: 11px; border-radius: 9px;
+    border: none; cursor: pointer; font-family: var(--font-body);
+    font-size: 13.5px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    transition: .15s; gap: 6px;
+  }
+  .cta-btn:disabled { opacity: .55; cursor: not-allowed; }
+  .cta-btn.reserve { background: var(--accent); color: #0a120b; }
+  .cta-btn.reserve:hover:not(:disabled) { background: var(--accent2); }
+  .cta-btn.deliver { background: rgba(95,212,117,.12); color: var(--accent); border: 1px solid rgba(95,212,117,.25); }
+  .cta-btn.deliver:hover:not(:disabled) { background: rgba(95,212,117,.2); }
+
+  .btn-spinner {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid rgba(0,0,0,.3); border-top-color: #0a120b;
+    animation: spin .6s linear infinite; display: inline-block;
+  }
+
+  /* ── EXPIRY PILL ── */
+  .expiry-pill {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+    padding: 4px 10px; border-radius: 20px;
+    background: rgba(95,212,117,.12); color: var(--accent);
+    border: 1px solid rgba(95,212,117,.25);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .expiry-pill.urgent {
+    background: rgba(240,82,82,.1); color: var(--danger);
+    border-color: rgba(240,82,82,.3);
+    animation: blink 1s infinite;
+  }
+  .expiry-pill.expired {
+    background: rgba(240,82,82,.1); color: var(--danger);
+    border-color: rgba(240,82,82,.3);
+  }
+  @keyframes blink { 50% { opacity: .55; } }
+
+  /* ── HISTORY ── */
+  .history-list { display: flex; flex-direction: column; gap: 8px; }
+  .history-row {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 18px;
+    animation: fadeUp .3s ease both;
+  }
+  .history-check {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: rgba(95,212,117,.12); color: var(--accent);
+    border: 1px solid rgba(95,212,117,.25);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; flex-shrink: 0;
+  }
+  .history-info { flex: 1; display: flex; align-items: baseline; gap: 6px; }
+  .history-type { font-family: var(--font-display); font-weight: 600; font-size: 14px; }
+  .history-qty  { font-size: 12px; color: var(--muted); font-family: var(--font-mono); }
+  .history-date { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+
+  /* ── EMPTY STATE ── */
+  .empty-state {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 60px 20px; gap: 14px; color: var(--muted);
+  }
+  .empty-icon { font-size: 40px; }
+  .empty-state p { font-size: 14px; font-family: var(--font-mono); }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 700px) {
+    .sidebar { width: 60px; }
+    .brand-name, .nav-label, .sidebar-btn span:last-child { display: none; }
+    .main-area { margin-left: 60px; }
+    .content { padding: 20px 16px; }
+    .topbar { padding: 16px; }
+  }
+`;
 
 export default NGODashboard;

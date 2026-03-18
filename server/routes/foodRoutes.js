@@ -13,7 +13,8 @@ const {
   getNGODashboard,
   getRestaurantDashboard,
   getAdminAnalytics,
-  deleteFood
+  deleteFood,
+  updateFood   // ✅ ADD THIS
 } = require("../controllers/foodController");
 
 const { protect, authorizeRoles } = require("../middleware/authMiddleware");
@@ -26,7 +27,7 @@ const createLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
   // Standard way to handle authenticated + guest rate limiting
-  keyGenerator: (req) => req.user?._id || req.ip,
+  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
   validate: { keyGeneratorIpFallback: false }, // Stops the IPv6 crash
   standardHeaders: true,
   legacyHeaders: false,
@@ -36,7 +37,7 @@ const createLimiter = rateLimit({
 const actionLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 20,
-  keyGenerator: (req) => req.user?._id || req.ip,
+  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
   validate: { keyGeneratorIpFallback: false },
   standardHeaders: true,
   legacyHeaders: false,
@@ -46,7 +47,7 @@ const actionLimiter = rateLimit({
 const readLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => req.user?._id || req.ip,
+  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
   validate: { keyGeneratorIpFallback: false },
   standardHeaders: true,
   legacyHeaders: false
@@ -83,7 +84,13 @@ router.get("/admin/analytics", protect, authorizeRoles("admin"), readLimiter, ge
 router.patch("/reserve/:id", protect, authorizeRoles("ngo"), actionLimiter, reserveFood);
 router.patch("/pick/:id", protect, authorizeRoles("restaurant"), actionLimiter, markPicked);
 router.patch("/deliver/:id", protect, authorizeRoles("ngo"), actionLimiter, markDelivered);
-
+router.patch(
+  "/:id",
+  protect,
+  authorizeRoles("restaurant"),
+  actionLimiter,
+  updateFood
+);
 // Delete
 router.delete("/:id", protect, authorizeRoles("restaurant"), deleteFood);
 

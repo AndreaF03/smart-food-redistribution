@@ -32,7 +32,14 @@ const userSchema = new mongoose.Schema({
         enum: ["restaurant", "ngo", "admin"],
         default: "ngo"
     },
-    passwordChangedAt: Date, // ADDED: Required for your authMiddleware logic
+    passwordChangedAt: Date, 
+    resetToken: String,
+    resetTokenExpiry: Date,
+    isActive: {
+  type: Boolean,
+  default: true
+},
+
     location: {
         type: {
             type: String,
@@ -54,6 +61,7 @@ const userSchema = new mongoose.Schema({
         },
         address: { type: String, trim: true }
     }
+    
 }, { timestamps: true });
 
 /* ==========================

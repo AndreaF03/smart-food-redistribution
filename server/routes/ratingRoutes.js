@@ -17,29 +17,21 @@ const { protect, authorizeRoles } = require("../middleware/authMiddleware");
 /* =====================================
    Rate limiter for rating submissions
 ===================================== */
-
 const rateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
-  keyGenerator: (req) => req.user?.id || ipKeyGenerator(req),
+  keyGenerator: (req) => req.user?._id?.toString() || ipKeyGenerator(req),
   standardHeaders: true,
   legacyHeaders: false,
-  message: {
-    message: "Too many rating submissions, please slow down"
-  }
+  message: { message: "Too many rating submissions, please slow down" }
 });
-
-
-/* =====================================
-   Rate limiter for reading ratings
-===================================== */
 
 const readLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => req.user?.id || ipKeyGenerator(req),
+  keyGenerator: (req) => req.user?._id?.toString() || ipKeyGenerator(req),
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
 });
 
 

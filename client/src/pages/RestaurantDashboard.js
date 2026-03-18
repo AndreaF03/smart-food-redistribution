@@ -6,28 +6,28 @@ import { io } from "socket.io-client";
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || "http://localhost:5000";
 
 /* ============================================================
-   STABLE MODULE HELPERS
+   HELPERS
 ============================================================ */
-const formatTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const formatTime = (ts) =>
+  new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-const getStatusColor = (status) => ({
-  available: "#16a34a",
-  reserved: "#2563eb",
-  picked: "#ca8a04",
-  delivered: "#64748b",
-  expired: "#dc2626",
-})[status] || "#64748b";
+const getStatusMeta = (status) =>
+  ({
+    available: { label: "Available", color: "var(--fresh)",  bg: "rgba(95,212,117,.1)",  border: "rgba(95,212,117,.25)" },
+    reserved:  { label: "Reserved",  color: "var(--info)",   bg: "rgba(96,180,240,.1)",  border: "rgba(96,180,240,.25)" },
+    picked:    { label: "Picked",    color: "var(--warn)",   bg: "rgba(240,180,41,.1)",  border: "rgba(240,180,41,.25)" },
+    delivered: { label: "Delivered", color: "var(--muted)",  bg: "rgba(120,140,125,.1)", border: "rgba(120,140,125,.2)" },
+    expired:   { label: "Expired",   color: "var(--danger)", bg: "rgba(240,82,82,.1)",   border: "rgba(240,82,82,.25)" },
+  })[status] || { label: status, color: "var(--muted)", bg: "var(--surface2)", border: "var(--border)" };
 
-const getNotifIcon = (type) => ({
-  food_reserved: "📦",
-  food_delivered: "✅",
-})[type] || "🔔";
+const getNotifIcon = (type) =>
+  ({ food_reserved: "📦", food_delivered: "✅" })[type] || "🔔";
 
 const getFreshnessColor = (score) => {
   const s = score ?? 0;
-  if (s >= 70) return "#16a34a";
-  if (s >= 40) return "#ca8a04";
-  return "#dc2626";
+  if (s >= 70) return "var(--fresh)";
+  if (s >= 40) return "var(--warn)";
+  return "var(--danger)";
 };
 
 const RATING_LABELS = ["", "Poor", "Fair", "Good", "Great", "Excellent"];
@@ -42,7 +42,11 @@ const computeCountdown = (predictedExpiry, nowMs) => {
   const secs = totalSecs % 60;
   const urgent = diffMs < 30 * 60 * 1000;
   if (hours > 0) return { label: `${hours}h ${mins}m`, urgent, expired: false };
-  return { label: `${String(mins).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`, urgent, expired: false };
+  return {
+    label: `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`,
+    urgent,
+    expired: false,
+  };
 };
 
 /* ============================================================
@@ -60,15 +64,16 @@ function useNow() {
 const ExpiryCountdown = ({ predictedExpiry, now }) => {
   const cd = computeCountdown(predictedExpiry, now);
   if (!cd) return null;
+  if (cd.expired) return <span className="expiry-pill expired">⚠ Expired</span>;
   return (
-    <span className={`expiry-pill ${cd.urgent ? "expiry-urgent" : ""} ${cd.expired ? "expiry-expired" : ""}`}>
-      {cd.expired ? "⚠ Expired" : `⏱ ${cd.label}`}
+    <span className={`expiry-pill ${cd.urgent ? "urgent" : ""}`}>
+      <span>⏱</span> {cd.label}
     </span>
   );
 };
 
 const StarRating = ({ value, hover, onRate, onHover, onLeave }) => (
-  <div style={{ display: "flex", gap: 4 }}>
+  <div style={{ display: "flex", gap: 6 }}>
     {[1, 2, 3, 4, 5].map((star) => (
       <button
         key={star}
@@ -77,16 +82,19 @@ const StarRating = ({ value, hover, onRate, onHover, onLeave }) => (
         onMouseEnter={() => onHover(star)}
         onMouseLeave={onLeave}
         style={{
-          background: "none", border: "none", cursor: "pointer", fontSize: 28,
-          color: star <= (hover || value) ? "#f59e0b" : "#e2e8f0",
-          transform: star <= (hover || value) ? "scale(1.1)" : "scale(1)",
-          transition: "0.1s"
+          background: "none", border: "none", cursor: "pointer", fontSize: 30,
+          color: star <= (hover || value) ? "#f0b429" : "var(--border)",
+          transform: star <= (hover || value) ? "scale(1.15)" : "scale(1)",
+          transition: "0.12s", lineHeight: 1,
         }}
       >★</button>
     ))}
   </div>
 );
 
+/* ============================================================
+   MAIN COMPONENT
+============================================================ */
 function RestaurantDashboard() {
   const navigate = useNavigate();
   const socketRef = useRef(null);
@@ -101,15 +109,32 @@ function RestaurantDashboard() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [activeFilter, setActiveFilter] = useState("all");
-  const [notifications, setNotifications] = useState([]);
+
+  const userId = localStorage.getItem("userId") || "guest";
+  const storageKey = `notifications_${userId}`;
+
   const [showNotifications, setShowNotifications] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifications, setNotifications] = useState(() => {
+    const saved = localStorage.getItem(storageKey);
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [unreadCount, setUnreadCount] = useState(() => {
+    const saved = localStorage.getItem(`${storageKey}_unread`);
+    return saved ? JSON.parse(saved) : 0;
+  });
+
   const [ratedFoodIds, setRatedFoodIds] = useState(new Set());
   const [ratingModal, setRatingModal] = useState(null);
   const [ratingValue, setRatingValue] = useState(0);
   const [ratingHover, setRatingHover] = useState(0);
   const [ratingComment, setRatingComment] = useState("");
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
+
+  const [editModal, setEditModal] = useState(null);
+  const [editData, setEditData] = useState({ quantity: "", storageType: "", cookedTime: "" });
+  const [editLoading, setEditLoading] = useState(false);
+
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   const fetchFood = useCallback(async (silent = false) => {
     try {
@@ -130,39 +155,31 @@ function RestaurantDashboard() {
   useEffect(() => { fetchDataRef.current = fetchFood; fetchFood(); }, [fetchFood]);
 
   useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify(notifications));
+  }, [notifications, storageKey]);
+
+  useEffect(() => {
+    localStorage.setItem(`${storageKey}_unread`, JSON.stringify(unreadCount));
+  }, [unreadCount, storageKey]);
+
+  useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) return;
-
     if (socketRef.current?.connected) return;
-
     socketRef.current = io(SOCKET_URL, {
-      auth: { token },
-      transports: ["websocket"],
-      reconnection: true,
+      auth: { token }, transports: ["websocket", "polling"], reconnection: true,
     });
-
-    socketRef.current.on("connect", () => {
-      console.log("✅ Restaurant Connected:", socketRef.current.id);
-    });
-
-    socketRef.current.on("food_reserved", (data) => {
-      console.log("📦 Food reserved event received:", data);
-      setNotifications(prev => [{ ...data, id: Date.now(), read: false }, ...prev]);
-      setUnreadCount(prev => prev + 1);
-      if (fetchDataRef.current) fetchDataRef.current(true); 
-    });
-
-    socketRef.current.on("food_delivered", (data) => {
-      setNotifications(prev => [{ ...data, id: Date.now(), read: false }, ...prev]);
-      setUnreadCount(prev => prev + 1);
+    const addNotif = (data) => {
+      setNotifications(prev => [
+        { ...data, id: Date.now(), read: false, timestamp: new Date().toISOString() },
+        ...prev,
+      ].slice(0, 50));
+      setUnreadCount(p => p + 1);
       if (fetchDataRef.current) fetchDataRef.current(true);
-    });
-
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
     };
+    socketRef.current.on("food_reserved", addNotif);
+    socketRef.current.on("food_delivered", addNotif);
+    return () => { socketRef.current?.disconnect(); };
   }, []);
 
   const handleMarkPicked = async (id) => {
@@ -171,19 +188,35 @@ function RestaurantDashboard() {
       await axios.patch(`/food/pick/${id}`);
       setSuccess("Pickup confirmed! ✅");
       fetchFood(true);
-    } catch (err) { setError("Failed to update status."); }
+    } catch { setError("Failed to update status."); }
     finally { setActionLoading(p => ({ ...p, [id]: false })); }
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Delete this listing?")) return;
     setActionLoading(p => ({ ...p, [id]: true }));
+    setDeleteConfirm(null);
     try {
       await axios.delete(`/food/${id}`);
-      setSuccess("Listing removed 🗑️");
+      setSuccess("Listing removed.");
       fetchFood(true);
-    } catch (err) { setError("Error deleting."); }
+    } catch { setError("Error deleting."); }
     finally { setActionLoading(p => ({ ...p, [id]: false })); }
+  };
+
+  const handleEdit = (item) => {
+    setEditModal(item);
+    setEditData({ quantity: item.quantity, storageType: item.storageType, cookedTime: item.cookedTime?.slice(0, 16) });
+  };
+
+  const submitEdit = async () => {
+    setEditLoading(true);
+    try {
+      await axios.patch(`/food/${editModal._id}`, editData);
+      setSuccess("Updated successfully ✏️");
+      setEditModal(null);
+      fetchFood(true);
+    } catch { setError("Failed to update"); }
+    finally { setEditLoading(false); }
   };
 
   const submitRating = async () => {
@@ -192,67 +225,114 @@ function RestaurantDashboard() {
     try {
       await axios.post("/ratings", { foodId: ratingModal.foodId, rating: ratingValue, comment: ratingComment });
       setRatedFoodIds(prev => new Set([...prev, String(ratingModal.foodId)]));
-      setSuccess("Rating sent! ✅");
+      setSuccess("Rating submitted! ⭐");
       setRatingModal(null);
-    } catch (err) { setError("Failed to submit rating."); }
+    } catch { setError("Failed to submit rating."); }
     finally { setRatingSubmitting(false); }
   };
 
+  const downloadCSV = (data, filename = "export.csv") => {
+    if (!data || data.length === 0) { alert("No data to export"); return; }
+    const headers = ["Food Type", "Quantity", "Status", "Freshness (%)", "Storage", "Restaurant", "Created At", "Delivered At"];
+    const rows = data.map(item => [
+      item.foodType, item.quantity, item.status, item.freshnessScore,
+      item.storageType, item.restaurant?.name || "—",
+      new Date(item.createdAt).toLocaleString(),
+      item.deliveredAt ? new Date(item.deliveredAt).toLocaleString() : "—",
+    ]);
+    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.setAttribute("download", filename);
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+  };
+
   const stats = useMemo(() => ({
-    total: food.length,
+    all:       food.length,
     available: food.filter(f => f.status === "available").length,
-    reserved: food.filter(f => f.status === "reserved").length,
-    picked: food.filter(f => f.status === "picked").length,
+    reserved:  food.filter(f => f.status === "reserved").length,
+    picked:    food.filter(f => f.status === "picked").length,
     delivered: food.filter(f => f.status === "delivered").length,
   }), [food]);
 
-  const filteredFood = useMemo(() => activeFilter === "all" ? food : food.filter(f => f.status === activeFilter), [food, activeFilter]);
+  const filteredFood = useMemo(() =>
+    activeFilter === "all" ? food : food.filter(f => f.status === activeFilter),
+    [food, activeFilter]
+  );
 
-  if (loading) return <div style={{ textAlign: 'center', marginTop: '50px' }}>Loading Dashboard...</div>;
+  const STAT_TABS = [
+    { key: "all",       label: "All",       icon: "◎" },
+    { key: "available", label: "Available", icon: "📍" },
+    { key: "reserved",  label: "Reserved",  icon: "📦" },
+    { key: "picked",    label: "Picked",    icon: "🚚" },
+    { key: "delivered", label: "Delivered", icon: "✅" },
+  ];
+
+  if (loading) {
+    return (
+      <>
+        <style>{CSS}</style>
+        <div className="loading-screen">
+          <div className="loading-leaf">🍽</div>
+          <p className="loading-text">Loading Dashboard…</p>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
-      <style>{`
-        .r-dashboard { max-width: 960px; margin: 0 auto; padding: 20px; font-family: 'DM Sans', sans-serif; background: #f1f5f9; min-height: 100vh; }
-        .r-header { display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 18px 24px; border-radius: 16px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
-        .alert { padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; display: flex; justify-content: space-between; }
-        .alert-success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
-        .alert-error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
-        .notif-bell { position: relative; width: 42px; height: 42px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; cursor: pointer; font-size: 20px; }
-        .notif-badge { position: absolute; top: -5px; right: -5px; background: #ef4444; color: #fff; font-size: 10px; font-weight: 700; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 2px solid #fff; }
-        .notif-dropdown { position: absolute; top: 55px; right: 0; width: 300px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); z-index: 1000; overflow: hidden; }
-        .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; text-transform: capitalize; }
-        .expiry-pill { font-family: 'DM Mono'; font-size: 12px; padding: 4px 10px; border-radius: 20px; background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; font-weight: 600; }
-        .expiry-urgent { background: #fff1f2; color: #e11d48; border-color: #fecdd3; animation: blink 1s infinite; }
-        .btn { padding: 9px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; border: none; font-size: 13px; transition: 0.2s; }
-        .btn-orange { background: #f97316; color: #fff; }
-        .btn-danger { background: #fff1f2; color: #e11d48; border: 1px solid #fecdd3; }
-        @keyframes blink { 50% { opacity: 0.6; } }
-      `}</style>
+      <style>{CSS}</style>
+      <div className="r-root">
 
-      <div className="r-dashboard">
-        {success && <div className="alert alert-success">{success} <button onClick={() => setSuccess("")} style={{border:'none', background:'none', cursor:'pointer'}}>×</button></div>}
-        {error && <div className="alert alert-error">{error} <button onClick={() => setError("")} style={{border:'none', background:'none', cursor:'pointer'}}>×</button></div>}
-
-        <header className="r-header">
-          <div>
-            <h1 style={{fontSize: '20px'}}>Restaurant Dashboard {refreshing && "..."}</h1>
+        {/* ── TOPBAR ── */}
+        <header className="r-topbar">
+          <div className="topbar-brand">
+            <span className="brand-icon">🍴</span>
+            <div>
+              <h1 className="brand-title">Restaurant Dashboard</h1>
+              <p className="brand-sub">Food donation management</p>
+            </div>
+            {refreshing && <span className="live-dot" title="Syncing…" />}
           </div>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', position: 'relative' }}>
-            <button className="btn" style={{ background: '#16a34a', color: '#fff' }} onClick={() => navigate("/add-donation")}>+ Add Food</button>
-            <div ref={notifRef}>
-              <button className="notif-bell" onClick={() => { setShowNotifications(!showNotifications); setUnreadCount(0); }}>
-                🔔 {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
+
+          <div className="topbar-actions">
+            <button
+              className="action-btn primary"
+              onClick={() => navigate("/add-donation")}
+            >＋ Add Food</button>
+            <button
+              className="action-btn export"
+              onClick={() => downloadCSV(filteredFood, "restaurant_data.csv")}
+            >⬇ Export CSV</button>
+
+            {/* Notifications */}
+            <div className="notif-wrap" ref={notifRef}>
+              <button
+                className="notif-btn"
+                onClick={() => {
+                  setShowNotifications(s => !s);
+                  setUnreadCount(0);
+                  setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                }}
+              >
+                🔔
+                {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
               </button>
               {showNotifications && (
-                <div className="notif-dropdown">
-                  <div style={{ padding: '12px', fontWeight: '700', borderBottom: '1px solid #f1f5f9' }}>Notifications</div>
-                  <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                    {notifications.length === 0 ? <div style={{ padding: '20px', textAlign: 'center', color: '#94a3b8' }}>No alerts</div> : 
-                      notifications.map(n => (
-                        <div key={n.id} style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>
-                          <div style={{ fontWeight: '600', fontSize: '13px' }}>{getNotifIcon(n.type)} {n.message}</div>
-                          <div style={{ fontSize: '10px', color: '#94a3b8' }}>{formatTime(n.timestamp)}</div>
+                <div className="notif-panel">
+                  <div className="notif-header">
+                    <span>Notifications</span>
+                    <button className="notif-close" onClick={() => setShowNotifications(false)}>×</button>
+                  </div>
+                  <div className="notif-list">
+                    {notifications.length === 0
+                      ? <div className="notif-empty">All clear — no alerts</div>
+                      : notifications.map(n => (
+                        <div key={n.id} className={`notif-item ${n.read ? "" : "unread"}`}>
+                          <span className="notif-msg">{getNotifIcon(n.type)} {n.message}</span>
+                          <span className="notif-time">{formatTime(n.timestamp)}</span>
                         </div>
                       ))
                     }
@@ -260,59 +340,226 @@ function RestaurantDashboard() {
                 </div>
               )}
             </div>
-            <button className="btn btn-danger" onClick={() => { localStorage.clear(); navigate("/login"); }}>Logout</button>
+
+            <button
+              className="action-btn danger"
+              onClick={() => { localStorage.clear(); navigate("/login"); }}
+            >⎋ Logout</button>
           </div>
         </header>
 
-        <section className="r-stats">
-          {["total", "available", "reserved", "picked", "delivered"].map(k => (
-            <div key={k} className={`r-stat-card ${activeFilter === k ? 'active' : ''}`} onClick={() => setActiveFilter(k)}>
-              <div style={{ fontSize: '24px', fontWeight: '700' }}>{stats[k]}</div>
-              <div style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase' }}>{k}</div>
+        {/* ── ALERTS ── */}
+        <div className="alert-area">
+          {success && (
+            <div className="flash success">
+              <span>{success}</span>
+              <button onClick={() => setSuccess("")}>×</button>
             </div>
-          ))}
-        </section>
+          )}
+          {error && (
+            <div className="flash error">
+              <span>{error}</span>
+              <button onClick={() => setError("")}>×</button>
+            </div>
+          )}
+        </div>
 
-        <main>
-          {filteredFood.map(item => (
-            <div key={item._id} className="r-card" style={{ background: '#fff', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', marginBottom: '16px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <h3 style={{fontSize: '16px', fontWeight: '700'}}>{item.foodType}</h3>
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                  <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
-                  <span className="status-badge" style={{ border: `1px solid ${getStatusColor(item.status)}`, color: getStatusColor(item.status) }}>
-                    ● {item.status}
-                  </span>
-                </div>
-              </div>
-              <div style={{ height: '6px', background: '#e2e8f0', borderRadius: '3px', margin: '10px 0', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${item.freshnessScore}%`, background: getFreshnessColor(item.freshnessScore) }} />
-              </div>
-              <p style={{ fontSize: '13px', color: '#475569' }}>📦 {item.quantity} units | 🌿 {item.freshnessScore}% Fresh</p>
-              <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
-                {item.status === "reserved" && (
-                  <button className="btn btn-orange" onClick={() => handleMarkPicked(item._id)} disabled={actionLoading[item._id]}>Confirm Pickup</button>
-                )}
-                {item.status === "delivered" && !ratedFoodIds.has(String(item._id)) && (
-                  <button className="btn" style={{ background: '#fefce8', color: '#ca8a04', border: '1px solid #fde68a' }} onClick={() => setRatingModal({ foodId: item._id, ngoName: item.reservedBy?.name })}>⭐ Rate NGO</button>
-                )}
-                <button className="btn btn-danger" onClick={() => handleDelete(item._id)} disabled={actionLoading[item._id]}>Remove</button>
-              </div>
-            </div>
+        {/* ── STAT TABS ── */}
+        <div className="stat-tabs">
+          {STAT_TABS.map(t => (
+            <button
+              key={t.key}
+              className={`stat-tab ${activeFilter === t.key ? "active" : ""}`}
+              onClick={() => setActiveFilter(t.key)}
+            >
+              <span className="stat-icon">{t.icon}</span>
+              <span className="stat-count">{stats[t.key]}</span>
+              <span className="stat-label">{t.label}</span>
+            </button>
           ))}
+        </div>
+
+        {/* ── FOOD LIST ── */}
+        <main className="r-content">
+          {filteredFood.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon">🍽</div>
+              <p>No {activeFilter === "all" ? "" : activeFilter} listings found.</p>
+            </div>
+          ) : (
+            <div className="food-list">
+              {filteredFood.map((item, i) => {
+                const sm = getStatusMeta(item.status);
+                const score = item.freshnessScore ?? 0;
+                return (
+                  <div
+                    key={item._id}
+                    className="food-card"
+                    style={{ animationDelay: `${i * 0.04}s` }}
+                  >
+                    {/* Image */}
+                    {item.image && (
+                      <div className="food-img-wrap">
+                        <img src={item.image} alt={item.foodType} className="food-img" />
+                      </div>
+                    )}
+
+                    <div className="food-body">
+                      {/* Title row */}
+                      <div className="food-title-row">
+                        <h3 className="food-type">{item.foodType}</h3>
+                        <div className="food-badges">
+                          <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
+                          <span
+                            className="status-badge"
+                            style={{ color: sm.color, background: sm.bg, border: `1px solid ${sm.border}` }}
+                          >
+                            ● {sm.label}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Freshness bar */}
+                      <div className="freshness-track">
+                        <div
+                          className="freshness-fill"
+                          style={{ width: `${score}%`, background: getFreshnessColor(score) }}
+                        />
+                      </div>
+
+                      {/* Meta */}
+                      <div className="food-meta">
+                        <span>📦 {item.quantity} units</span>
+                        <span
+                          className="freshness-pct"
+                          style={{ color: getFreshnessColor(score) }}
+                        >
+                          🌿 {score}% fresh
+                        </span>
+                        {item.storageType && (
+                          <span>{item.storageType === "refrigerated" ? "❄" : "🌡"} {item.storageType}</span>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="food-actions">
+                        {item.status === "reserved" && (
+                          <button
+                            className="food-btn confirm"
+                            onClick={() => handleMarkPicked(item._id)}
+                            disabled={actionLoading[item._id]}
+                          >
+                            {actionLoading[item._id] ? <span className="btn-spinner" /> : "✓ Confirm Pickup"}
+                          </button>
+                        )}
+                        {item.status === "delivered" && !ratedFoodIds.has(String(item._id)) && (
+                          <button
+                            className="food-btn rate"
+                            onClick={() => { setRatingModal({ foodId: item._id, ngoName: item.reservedBy?.name }); setRatingValue(0); setRatingComment(""); }}
+                          >
+                            ⭐ Rate NGO
+                          </button>
+                        )}
+                        {item.status === "available" && (
+                          <>
+                            <button className="food-btn edit" onClick={() => handleEdit(item)}>✏ Edit</button>
+                            <button
+                              className="food-btn remove"
+                              onClick={() => setDeleteConfirm(item._id)}
+                              disabled={actionLoading[item._id]}
+                            >
+                              {actionLoading[item._id] ? <span className="btn-spinner" /> : "✕ Remove"}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </main>
       </div>
 
+      {/* ── RATING MODAL ── */}
       {ratingModal && (
-        <div className="modal-overlay" onClick={() => setRatingModal(null)}>
-          <div className="modal" style={{ background: '#fff', padding: '30px', borderRadius: '20px', width: '400px' }} onClick={e => e.stopPropagation()}>
-            <h2 style={{ fontSize: '18px', marginBottom: '20px' }}>Rate {ratingModal.ngoName || "NGO"}</h2>
-            <StarRating value={ratingValue} hover={ratingHover} onRate={setRatingValue} onHover={setRatingHover} onLeave={() => setRatingHover(0)} />
-            <p style={{ color: "#f59e0b", fontWeight: "700", marginTop: '10px' }}>{RATING_LABELS[ratingValue || ratingHover]}</p>
-            <textarea style={{ width: '100%', marginTop: '20px', padding: '10px', borderRadius: '10px', border: '1px solid #e2e8f0' }} rows="3" value={ratingComment} onChange={e => setRatingComment(e.target.value)} placeholder="Experience..." />
-            <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
-              <button className="btn" style={{ flex: 1, background: '#f1f5f9' }} onClick={() => setRatingModal(null)}>Cancel</button>
-              <button className="btn btn-orange" style={{ flex: 1 }} onClick={submitRating} disabled={ratingSubmitting}>Submit</button>
+        <div className="modal-backdrop" onClick={() => setRatingModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2 className="modal-title">Rate {ratingModal.ngoName || "NGO"}</h2>
+            <StarRating
+              value={ratingValue} hover={ratingHover}
+              onRate={setRatingValue} onHover={setRatingHover} onLeave={() => setRatingHover(0)}
+            />
+            {(ratingValue || ratingHover) > 0 && (
+              <p className="rating-label">{RATING_LABELS[ratingHover || ratingValue]}</p>
+            )}
+            <textarea
+              className="modal-textarea"
+              rows="3"
+              value={ratingComment}
+              onChange={e => setRatingComment(e.target.value)}
+              placeholder="Share your experience…"
+            />
+            <div className="modal-actions">
+              <button className="modal-btn cancel" onClick={() => setRatingModal(null)}>Cancel</button>
+              <button className="modal-btn submit" onClick={submitRating} disabled={ratingSubmitting || ratingValue === 0}>
+                {ratingSubmitting ? <span className="btn-spinner" /> : "Submit Rating"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── EDIT MODAL ── */}
+      {editModal && (
+        <div className="modal-backdrop" onClick={() => setEditModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2 className="modal-title">Edit Donation</h2>
+            <label className="modal-label">Quantity</label>
+            <input
+              className="modal-input"
+              type="number"
+              value={editData.quantity}
+              onChange={e => setEditData({ ...editData, quantity: e.target.value })}
+              placeholder="Quantity"
+            />
+            <label className="modal-label">Storage Type</label>
+            <select
+              className="modal-input"
+              value={editData.storageType}
+              onChange={e => setEditData({ ...editData, storageType: e.target.value })}
+            >
+              <option value="room">🌡 Room Temperature</option>
+              <option value="refrigerated">❄ Refrigerated</option>
+            </select>
+            <label className="modal-label">Cooked Time</label>
+            <input
+              className="modal-input"
+              type="datetime-local"
+              value={editData.cookedTime}
+              onChange={e => setEditData({ ...editData, cookedTime: e.target.value })}
+            />
+            <div className="modal-actions">
+              <button className="modal-btn cancel" onClick={() => setEditModal(null)}>Cancel</button>
+              <button className="modal-btn submit" onClick={submitEdit} disabled={editLoading}>
+                {editLoading ? <span className="btn-spinner" /> : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DELETE CONFIRM MODAL ── */}
+      {deleteConfirm && (
+        <div className="modal-backdrop" onClick={() => setDeleteConfirm(null)}>
+          <div className="modal modal-sm" onClick={e => e.stopPropagation()}>
+            <div className="delete-icon">🗑</div>
+            <h2 className="modal-title">Remove Listing?</h2>
+            <p className="modal-desc">This action cannot be undone.</p>
+            <div className="modal-actions">
+              <button className="modal-btn cancel" onClick={() => setDeleteConfirm(null)}>Keep It</button>
+              <button className="modal-btn danger" onClick={() => handleDelete(deleteConfirm)}>Yes, Remove</button>
             </div>
           </div>
         </div>
@@ -320,5 +567,295 @@ function RestaurantDashboard() {
     </>
   );
 }
+
+/* ============================================================
+   CSS
+============================================================ */
+const CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0e100f;
+    --surface:  #161a18;
+    --surface2: #1e2420;
+    --border:   #2a3028;
+    --text:     #e8ede9;
+    --muted:    #7a8c7e;
+    --accent:   #5fd475;
+    --accent2:  #a8f0b4;
+    --fresh:    #5fd475;
+    --warn:     #f0b429;
+    --danger:   #f05252;
+    --info:     #60b4f0;
+    --radius:   14px;
+    --font-display: 'Syne', sans-serif;
+    --font-body:    'Instrument Sans', sans-serif;
+    --font-mono:    'DM Mono', monospace;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: var(--font-body); }
+
+  /* ── LOADING ── */
+  .loading-screen {
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px;
+  }
+  .loading-leaf { font-size: 48px; animation: spin 2s linear infinite; }
+  .loading-text { font-family: var(--font-mono); color: var(--muted); font-size: 13px; letter-spacing: .1em; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── ROOT ── */
+  .r-root { max-width: 860px; margin: 0 auto; padding: 28px 20px; min-height: 100vh; }
+
+  /* ── TOPBAR ── */
+  .r-topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px 24px; margin-bottom: 20px;
+  }
+  .topbar-brand { display: flex; align-items: center; gap: 14px; }
+  .brand-icon { font-size: 24px; }
+  .brand-title { font-family: var(--font-display); font-size: 18px; font-weight: 700; }
+  .brand-sub { font-size: 12px; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(95,212,117,.5); } 50% { box-shadow: 0 0 0 8px rgba(95,212,117,0); } }
+
+  .topbar-actions { display: flex; align-items: center; gap: 10px; }
+  .action-btn {
+    padding: 9px 15px; border-radius: 9px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--muted);
+    font-family: var(--font-body); font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: .15s; white-space: nowrap;
+  }
+  .action-btn:hover { color: var(--text); border-color: var(--muted); }
+  .action-btn.primary { background: var(--accent); color: #0a120b; border-color: transparent; font-weight: 600; }
+  .action-btn.primary:hover { background: var(--accent2); }
+  .action-btn.export { background: rgba(96,180,240,.1); color: var(--info); border-color: rgba(96,180,240,.25); }
+  .action-btn.export:hover { background: rgba(96,180,240,.18); }
+  .action-btn.danger { background: rgba(240,82,82,.1); color: var(--danger); border-color: rgba(240,82,82,.2); }
+  .action-btn.danger:hover { background: rgba(240,82,82,.18); }
+
+  /* ── NOTIFICATIONS ── */
+  .notif-wrap { position: relative; }
+  .notif-btn {
+    position: relative; width: 40px; height: 40px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; cursor: pointer; font-size: 18px;
+    display: flex; align-items: center; justify-content: center; transition: .15s;
+  }
+  .notif-btn:hover { border-color: var(--muted); }
+  .notif-badge {
+    position: absolute; top: -5px; right: -5px;
+    background: var(--danger); color: #fff;
+    font-size: 9px; font-weight: 700; font-family: var(--font-mono);
+    width: 17px; height: 17px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px solid var(--surface);
+  }
+  .notif-panel {
+    position: absolute; top: 50px; right: 0; width: 300px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: 0 20px 50px rgba(0,0,0,.5);
+    overflow: hidden; z-index: 200;
+    animation: slideDown .15s ease;
+  }
+  @keyframes slideDown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  .notif-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 16px; font-family: var(--font-display); font-weight: 700; font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  .notif-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; }
+  .notif-list { max-height: 280px; overflow-y: auto; }
+  .notif-item { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 3px; }
+  .notif-item.unread { background: rgba(95,212,117,.05); }
+  .notif-msg { font-size: 13px; color: var(--text); }
+  .notif-time { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+  .notif-empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px; font-family: var(--font-mono); }
+
+  /* ── ALERTS ── */
+  .alert-area { margin-bottom: 4px; }
+  .flash {
+    padding: 12px 16px; border-radius: 10px; margin-bottom: 12px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 14px; font-weight: 500;
+    animation: slideDown .2s ease;
+  }
+  .flash button { background: none; border: none; cursor: pointer; font-size: 18px; opacity: .6; color: inherit; }
+  .flash.success { background: rgba(95,212,117,.1); color: var(--accent); border: 1px solid rgba(95,212,117,.25); }
+  .flash.error   { background: rgba(240,82,82,.1);  color: var(--danger); border: 1px solid rgba(240,82,82,.25); }
+
+  /* ── STAT TABS ── */
+  .stat-tabs {
+    display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .stat-tab {
+    flex: 1; min-width: 90px; padding: 14px 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    transition: .15s; font-family: var(--font-body);
+  }
+  .stat-tab:hover { border-color: var(--muted); }
+  .stat-tab.active { border-color: var(--accent); background: rgba(95,212,117,.08); }
+  .stat-icon { font-size: 18px; }
+  .stat-count { font-family: var(--font-display); font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; }
+  .stat-label { font-size: 11px; color: var(--muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .04em; }
+  .stat-tab.active .stat-label { color: var(--accent); }
+
+  /* ── CONTENT ── */
+  .r-content { }
+  .food-list { display: flex; flex-direction: column; gap: 14px; }
+
+  /* ── FOOD CARD ── */
+  .food-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+    display: flex; flex-direction: column;
+    animation: fadeUp .3s ease both;
+    transition: border-color .2s, transform .2s;
+  }
+  .food-card:hover { border-color: #3a4438; transform: translateY(-1px); }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .food-img-wrap { }
+  .food-img { width: 100%; height: 180px; object-fit: cover; display: block; }
+
+  .food-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+
+  .food-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .food-type { font-family: var(--font-display); font-size: 16px; font-weight: 700; color: var(--text); }
+  .food-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+  .status-badge {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+    padding: 4px 10px; border-radius: 20px;
+  }
+
+  .freshness-track {
+    height: 4px; background: var(--surface2); border-radius: 99px; overflow: hidden;
+  }
+  .freshness-fill { height: 100%; border-radius: 99px; transition: width .5s ease; }
+
+  .food-meta {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: 12px; color: var(--muted); font-family: var(--font-mono);
+  }
+  .freshness-pct { font-weight: 500; }
+
+  .food-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+
+  .food-btn {
+    padding: 9px 16px; border-radius: 9px; border: none;
+    font-family: var(--font-body); font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: .15s;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .food-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .food-btn.confirm { background: var(--accent); color: #0a120b; }
+  .food-btn.confirm:hover:not(:disabled) { background: var(--accent2); }
+  .food-btn.rate { background: rgba(240,180,41,.1); color: var(--warn); border: 1px solid rgba(240,180,41,.25); }
+  .food-btn.rate:hover { background: rgba(240,180,41,.18); }
+  .food-btn.edit { background: rgba(96,180,240,.1); color: var(--info); border: 1px solid rgba(96,180,240,.25); }
+  .food-btn.edit:hover { background: rgba(96,180,240,.18); }
+  .food-btn.remove { background: rgba(240,82,82,.1); color: var(--danger); border: 1px solid rgba(240,82,82,.2); }
+  .food-btn.remove:hover:not(:disabled) { background: rgba(240,82,82,.18); }
+
+  /* ── EXPIRY PILL ── */
+  .expiry-pill {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+    padding: 4px 10px; border-radius: 20px;
+    background: rgba(95,212,117,.1); color: var(--accent);
+    border: 1px solid rgba(95,212,117,.2);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .expiry-pill.urgent { background: rgba(240,82,82,.1); color: var(--danger); border-color: rgba(240,82,82,.25); animation: blink 1s infinite; }
+  .expiry-pill.expired { background: rgba(240,82,82,.1); color: var(--danger); border-color: rgba(240,82,82,.25); }
+  @keyframes blink { 50% { opacity: .55; } }
+
+  /* ── BTN SPINNER ── */
+  .btn-spinner {
+    width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.2); border-top-color: currentColor;
+    animation: spin .6s linear infinite; display: inline-block;
+  }
+
+  /* ── EMPTY STATE ── */
+  .empty-state {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 60px 20px; gap: 14px; color: var(--muted);
+  }
+  .empty-icon { font-size: 40px; }
+  .empty-state p { font-size: 14px; font-family: var(--font-mono); }
+
+  /* ── MODALS ── */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.7);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 500; backdrop-filter: blur(4px);
+    animation: fadeIn .15s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 20px; padding: 32px; width: 420px; max-width: 95vw;
+    animation: slideDown .2s ease;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .modal-sm { width: 340px; text-align: center; align-items: center; }
+  .modal-title { font-family: var(--font-display); font-size: 18px; font-weight: 700; }
+  .modal-desc { font-size: 13px; color: var(--muted); }
+  .delete-icon { font-size: 36px; }
+
+  .rating-label { font-family: var(--font-display); font-size: 15px; font-weight: 700; color: var(--warn); }
+
+  .modal-label { font-size: 12px; color: var(--muted); font-family: var(--font-mono); letter-spacing: .04em; margin-bottom: -8px; }
+
+  .modal-input {
+    width: 100%; padding: 11px 14px; border-radius: 10px;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--font-body); font-size: 14px;
+    outline: none; transition: border-color .15s;
+  }
+  .modal-input:focus { border-color: var(--accent); }
+  .modal-input option { background: var(--surface2); }
+
+  .modal-textarea {
+    width: 100%; padding: 11px 14px; border-radius: 10px;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--font-body); font-size: 14px;
+    outline: none; resize: vertical; transition: border-color .15s;
+  }
+  .modal-textarea:focus { border-color: var(--accent); }
+  .modal-textarea::placeholder { color: var(--muted); }
+
+  .modal-actions { display: flex; gap: 10px; margin-top: 4px; }
+  .modal-btn {
+    flex: 1; padding: 11px; border-radius: 10px; border: none;
+    font-family: var(--font-body); font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: .15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .modal-btn.cancel { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+  .modal-btn.cancel:hover:not(:disabled) { color: var(--text); }
+  .modal-btn.submit { background: var(--accent); color: #0a120b; }
+  .modal-btn.submit:hover:not(:disabled) { background: var(--accent2); }
+  .modal-btn.danger { background: rgba(240,82,82,.15); color: var(--danger); border: 1px solid rgba(240,82,82,.3); }
+  .modal-btn.danger:hover { background: rgba(240,82,82,.25); }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 600px) {
+    .r-topbar { flex-direction: column; gap: 14px; align-items: flex-start; }
+    .topbar-actions { flex-wrap: wrap; }
+    .stat-tabs { gap: 6px; }
+    .stat-tab { min-width: 70px; }
+  }
+`;
 
 export default RestaurantDashboard;
