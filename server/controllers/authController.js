@@ -1,7 +1,7 @@
-const jwt    = require("jsonwebtoken");
+const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
-const User   = require("../models/User");
+const User = require("../models/User");
 const { sendEmail } = require("../utils/mailer");
 
 /* =====================================
@@ -31,20 +31,24 @@ exports.register = async (req, res) => {
 
     // FIX: basic password length guard before hitting the DB
     if (password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters" });
+      return res
+        .status(400)
+        .json({ message: "Password must be at least 6 characters" });
     }
 
-    const userExists = await User.findOne({ email: email.toLowerCase().trim() });
+    const userExists = await User.findOne({
+      email: email.toLowerCase().trim(),
+    });
     if (userExists) {
       return res.status(400).json({ message: "User already exists" });
     }
 
     const user = await User.create({
-      name:     name.trim(),
-      email:    email.toLowerCase().trim(),
-      password,                                           // model hashes on pre-save
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      password, // model hashes on pre-save
       location,
-      role:     ["restaurant", "ngo"].includes(role) ? role : "ngo",
+      role: ["restaurant", "ngo"].includes(role) ? role : "ngo",
     });
 
     const token = signToken(user._id, user.role);
@@ -52,7 +56,7 @@ exports.register = async (req, res) => {
     res.status(201).json({
       message: "User registered successfully",
       token,
-      user: { _id: user._id, name: user.name, role: user.role },  // FIX: _id not id — Login.jsx reads user._id
+      user: { _id: user._id, name: user.name, role: user.role }, // FIX: _id not id — Login.jsx reads user._id
     });
   } catch (error) {
     console.error("REGISTER ERROR:", error);
@@ -68,10 +72,14 @@ exports.login = async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ message: "Please provide email and password" });
+      return res
+        .status(400)
+        .json({ message: "Please provide email and password" });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase().trim() }).select("+password");
+    const user = await User.findOne({
+      email: email.toLowerCase().trim(),
+    }).select("+password");
 
     if (!user || !(await user.comparePassword(password))) {
       return res.status(401).json({ message: "Invalid email or password" });
@@ -79,14 +87,16 @@ exports.login = async (req, res) => {
 
     // FIX: check isActive so deactivated users cannot log in
     if (user.isActive === false) {
-      return res.status(403).json({ message: "Account deactivated. Contact support." });
+      return res
+        .status(403)
+        .json({ message: "Account deactivated. Contact support." });
     }
 
     const token = signToken(user._id, user.role);
 
     res.status(200).json({
       token,
-      role: user.role,                                            // FIX: Login.jsx destructures res.data.role separately
+      role: user.role, // FIX: Login.jsx destructures res.data.role separately
       user: { _id: user._id, name: user.name, role: user.role }, // FIX: _id not id
     });
   } catch (error) {
@@ -124,12 +134,12 @@ exports.updateProfile = async (req, res) => {
 
     const { name, email, password, location } = req.body;
 
-    if (name)     user.name     = name.trim();
+    if (name) user.name = name.trim();
     if (location) user.location = location;
 
     if (email) {
       const normalised = email.toLowerCase().trim();
-      const conflict   = await User.findOne({ email: normalised });
+      const conflict = await User.findOne({ email: normalised });
 
       if (conflict && conflict._id.toString() !== user._id.toString()) {
         return res.status(400).json({ message: "Email already in use" });
@@ -140,7 +150,9 @@ exports.updateProfile = async (req, res) => {
 
     if (password) {
       if (password.length < 6) {
-        return res.status(400).json({ message: "Password must be at least 6 characters" });
+        return res
+          .status(400)
+          .json({ message: "Password must be at least 6 characters" });
       }
       // Assign plain text — model pre-save hook will hash it once
       user.password = password;
@@ -151,11 +163,11 @@ exports.updateProfile = async (req, res) => {
     res.status(200).json({
       message: "Profile updated successfully",
       user: {
-        _id:      updated._id,
-        name:     updated.name,
-        email:    updated.email,
+        _id: updated._id,
+        name: updated.name,
+        email: updated.email,
         location: updated.location,
-        role:     updated.role,
+        role: updated.role,
       },
     });
   } catch (error) {
@@ -183,14 +195,19 @@ exports.forgotPassword = async (req, res) => {
     const user = await User.findOne({ email: email.toLowerCase().trim() });
 
     // Return the same response whether the user exists or not
-    const genericResponse = { message: "If that email exists, a reset link has been sent" };
+    const genericResponse = {
+      message: "If that email exists, a reset link has been sent",
+    };
 
     if (!user) return res.status(200).json(genericResponse);
 
-    const resetToken   = crypto.randomBytes(32).toString("hex");
-    const hashedToken  = crypto.createHash("sha256").update(resetToken).digest("hex");
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
 
-    user.resetToken       = hashedToken;
+    user.resetToken = hashedToken;
     user.resetTokenExpiry = Date.now() + 15 * 60 * 1000; // 15 min
     await user.save();
 
@@ -198,7 +215,7 @@ exports.forgotPassword = async (req, res) => {
 
     // Non-fatal — token is already saved; log but don't crash
     sendEmail({
-      to:      user.email,
+      to: user.email,
       subject: "Reset Your Password 🔐",
       html: `
         <h3>Password Reset</h3>
@@ -206,9 +223,16 @@ exports.forgotPassword = async (req, res) => {
         <a href="${resetUrl}">${resetUrl}</a>
         <p>If you didn't request this, ignore this email.</p>
       `,
-    }).catch(err => console.error("FORGOT PASSWORD EMAIL ERROR:", err));
+    }).catch((err) => console.error("FORGOT PASSWORD EMAIL ERROR:", err));
 
-    res.status(200).json(genericResponse);
+    const responsePayload = {
+      message: "If that email exists, a reset link has been sent",
+    };
+    if (process.env.NODE_ENV !== "production") {
+      responsePayload._resetToken = resetToken; // raw (unhashed) token
+    }
+
+    res.status(200).json(responsePayload);
   } catch (err) {
     console.error("FORGOT PASSWORD ERROR:", err);
     res.status(500).json({ message: "Server error" });
@@ -221,17 +245,19 @@ exports.forgotPassword = async (req, res) => {
 ===================================== */
 exports.resetPassword = async (req, res) => {
   try {
-    const { token }    = req.params;
+    const { token } = req.params;
     const { password } = req.body;
 
     if (!password || password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters" });
+      return res
+        .status(400)
+        .json({ message: "Password must be at least 6 characters" });
     }
 
     const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
     const user = await User.findOne({
-      resetToken:       hashedToken,
+      resetToken: hashedToken,
       resetTokenExpiry: { $gt: Date.now() },
     });
 
@@ -240,8 +266,8 @@ exports.resetPassword = async (req, res) => {
     }
 
     // Assign plain text — model pre-save hook hashes it
-    user.password         = password;
-    user.resetToken       = undefined;
+    user.password = password;
+    user.resetToken = undefined;
     user.resetTokenExpiry = undefined;
     await user.save();
 
@@ -285,7 +311,7 @@ exports.updateUserRole = async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.params.id,
       { role },
-      { new: true }
+      { new: true },
     ).select("-password");
 
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -309,13 +335,15 @@ exports.deactivateUser = async (req, res) => {
     }
 
     if (req.params.id === req.user._id.toString()) {
-      return res.status(400).json({ message: "Cannot deactivate your own account" });
+      return res
+        .status(400)
+        .json({ message: "Cannot deactivate your own account" });
     }
 
     const user = await User.findByIdAndUpdate(
       req.params.id,
       { isActive: false },
-      { new: true }
+      { new: true },
     ).select("-password");
 
     if (!user) return res.status(404).json({ message: "User not found" });

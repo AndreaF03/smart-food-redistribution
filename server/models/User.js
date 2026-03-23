@@ -68,19 +68,11 @@ const userSchema = new mongoose.Schema({
    Security Hooks & Methods
 ========================== */
 
-// 1. Hash password before saving
-userSchema.pre("save", async function(next) {
-    // Only run this if password was actually modified
-    if (!this.isModified("password")) return next();
-
-    // Hash the password with cost of 12
-    this.password = await bcrypt.hash(this.password, 12);
-
-    // Update passwordChangedAt if the document isn't new
-    if (!this.isNew) {
-        this.passwordChangedAt = Date.now() - 1000; // -1s ensures token is created after change
-    }
-    next();
+userSchema.pre("save", async function () {
+  if (!this.isModified("password")) return;
+  const rounds = process.env.NODE_ENV === "test" ? 4 : 12;
+  this.password = await bcrypt.hash(this.password, rounds);
+  if (!this.isNew) this.passwordChangedAt = Date.now() - 1000;
 });
 
 // 2. Instance method to compare passwords
