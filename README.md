@@ -433,6 +433,7 @@ smart-food-redistribution/
 │       ├── api/
 │       │   └── axios.js
 │       ├── components/
+│       │   └── NGOFoodMap.js
 │       │   └── ProtectedRoute.js
 │       ├── pages/
 │       │   ├── Login.js
@@ -440,10 +441,14 @@ smart-food-redistribution/
 │       │   ├── NGODashboard.js
 │       │   ├── RestaurantDashboard.js
 │       │   ├── AdminDashboard.js
-│       │   └── AddDonation.js
+│       │   └── AddDonation.
+│       │   └──Profile.js
+│       │   └──ResetPassword.js
 │       └── App.js
 │
 └── server/
+    ├── config/
+    │   ├── cloudinary.js
     ├── controllers/
     │   ├── authController.js
     │   ├── foodController.js
@@ -454,6 +459,7 @@ smart-food-redistribution/
     ├── middleware/
     │   ├── authMiddleware.js
     │   └── errorMiddleware.js
+    │   └── uploadMiddleware.js
     ├── models/
     │   ├── User.js
     │   ├── Food.js

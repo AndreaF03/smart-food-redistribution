@@ -78,9 +78,14 @@ const ExpiryCountdown = ({ predictedExpiry, now }) => {
   );
 };
 
+/* FIX 3: ChangeView now uses useEffect so it only fires when
+   center actually changes — previously ran on every render
+   which fought the user every time they panned or zoomed */
 function ChangeView({ center }) {
   const map = useMap();
-  map.setView(center, 13);
+  useEffect(() => {
+    map.setView(center, 13);
+  }, [center, map]);
   return null;
 }
 
@@ -103,10 +108,18 @@ function NGODashboard() {
   const [activeTab, setActiveTab] = useState("nearby");
   const [actionLoading, setActionLoading] = useState({});
   const [searchTerm, setSearchTerm] = useState("");
+
+  /* FIX 1: food type filter options now match Food model enum exactly:
+     ["cooked", "raw", "packaged", "beverages", "other"]
+     Previous options "veg" / "non-veg" never matched anything */
   const [foodTypeFilter, setFoodTypeFilter] = useState("all");
   const [storageFilter, setStorageFilter] = useState("all");
   const [freshnessFilter, setFreshnessFilter] = useState(0);
   const [showNotifications, setShowNotifications] = useState(false);
+
+  /* FIX 2: map center starts as Bengaluru fallback but updates
+     to the NGO's actual area once food listings are loaded */
+  const [mapCenter, setMapCenter] = useState([12.9716, 77.5946]);
 
   const userId = localStorage.getItem("userId") || "guest";
   const storageKey = `notifications_${userId}_ngo`;
@@ -120,8 +133,6 @@ function NGODashboard() {
     return saved ? JSON.parse(saved) : 0;
   });
 
-  const mapCenter = useMemo(() => [12.9716, 77.5946], []);
-
   const fetchData = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true); else setRefreshing(true);
@@ -130,8 +141,16 @@ function NGODashboard() {
         axios.get("/food/nearby"),
         axios.get("/food/ngo/dashboard"),
       ]);
-      setNearbyFood(nearbyRes.data || []);
+      const food = nearbyRes.data || [];
+      setNearbyFood(food);
       setMyFood(myRes.data || { reserved: [], picked: [], delivered: [] });
+
+      /* FIX 2: derive map center from first listing's coordinates
+         so the map is always centered on the NGO's actual area */
+      if (food.length > 0 && food[0].location?.coordinates) {
+        const [lng, lat] = food[0].location.coordinates;
+        setMapCenter([lat, lng]); // Leaflet expects [lat, lng]
+      }
     } catch (err) {
       if (err.response?.status !== 401) setError("Failed to refresh dashboard.");
     } finally {
@@ -149,6 +168,7 @@ function NGODashboard() {
     localStorage.setItem(`${storageKey}_unread`, JSON.stringify(unreadCount));
   }, [unreadCount, storageKey]);
 
+  /* Socket.io */
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) return;
@@ -170,6 +190,17 @@ function NGODashboard() {
       socketRef.current?.off("food_delivered");
       socketRef.current?.disconnect();
     };
+  }, []);
+
+  /* FIX 5: click-outside closes notification panel */
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setShowNotifications(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
   const downloadCSV = (data, filename = "export.csv") => {
@@ -213,10 +244,10 @@ function NGODashboard() {
   };
 
   const tabs = useMemo(() => [
-    { id: "nearby", label: "Available", icon: "📍", count: nearbyFood.length },
-    { id: "reserved", label: "Reserved", icon: "📦", count: myFood.reserved.length },
-    { id: "picked", label: "Ready", icon: "🚚", count: myFood.picked.length },
-    { id: "delivered", label: "History", icon: "✅", count: myFood.delivered.length },
+    { id: "nearby",   label: "Available", icon: "📍", count: nearbyFood.length },
+    { id: "reserved", label: "Reserved",  icon: "📦", count: myFood.reserved.length },
+    { id: "picked",   label: "Ready",     icon: "🚚", count: myFood.picked.length },
+    { id: "delivered",label: "History",   icon: "✅", count: myFood.delivered.length },
   ], [nearbyFood.length, myFood]);
 
   const filteredNearbyFood = useMemo(() => {
@@ -224,8 +255,9 @@ function NGODashboard() {
       const matchesSearch =
         item.foodType?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.restaurant?.name?.toLowerCase().includes(searchTerm.toLowerCase());
+      /* FIX 1: compare against model enum values, not "veg"/"non-veg" */
       const matchesFoodType = foodTypeFilter === "all" || item.foodType === foodTypeFilter;
-      const matchesStorage = storageFilter === "all" || item.storageType === storageFilter;
+      const matchesStorage  = storageFilter === "all"  || item.storageType === storageFilter;
       const matchesFreshness = item.freshnessScore >= freshnessFilter;
       return matchesSearch && matchesFoodType && matchesStorage && matchesFreshness;
     });
@@ -270,7 +302,16 @@ function NGODashboard() {
           </nav>
 
           <div className="sidebar-footer">
-            <button className="sidebar-btn logout" onClick={() => { localStorage.clear(); navigate("/login"); }}>
+            <button
+              className="sidebar-btn"
+              onClick={() => navigate("/profile")}
+            >
+              <span>👤</span> Profile
+            </button>
+            <button
+              className="sidebar-btn logout"
+              onClick={() => { localStorage.clear(); navigate("/login"); }}
+            >
               <span>⎋</span> Sign Out
             </button>
           </div>
@@ -295,11 +336,15 @@ function NGODashboard() {
               >
                 ⬇ Export
               </button>
-              <button className="action-btn" onClick={() => fetchData(true)} disabled={refreshing}>
+              <button
+                className="action-btn"
+                onClick={() => fetchData(true)}
+                disabled={refreshing}
+              >
                 ↻ Refresh
               </button>
 
-              {/* Notifications */}
+              {/* FIX 5: notifRef wired to wrapper div for click-outside */}
               <div className="notif-wrap" ref={notifRef}>
                 <button
                   className="notif-btn"
@@ -355,6 +400,7 @@ function NGODashboard() {
             {/* ══ NEARBY TAB ══ */}
             {activeTab === "nearby" && (
               <div className="tab-panel">
+
                 {/* Filter bar */}
                 <div className="filter-bar">
                   <div className="search-wrap">
@@ -368,17 +414,33 @@ function NGODashboard() {
                     />
                   </div>
                   <div className="filter-selects">
-                    <select className="filter-select" value={foodTypeFilter} onChange={e => setFoodTypeFilter(e.target.value)}>
-                      <option value="all">All Food</option>
-                      <option value="veg">🥦 Veg</option>
-                      <option value="non-veg">🍗 Non-Veg</option>
+                    {/* FIX 1: options now match Food model enum exactly */}
+                    <select
+                      className="filter-select"
+                      value={foodTypeFilter}
+                      onChange={e => setFoodTypeFilter(e.target.value)}
+                    >
+                      <option value="all">All Types</option>
+                      <option value="cooked">🍳 Cooked</option>
+                      <option value="raw">🥦 Raw</option>
+                      <option value="packaged">📦 Packaged</option>
+                      <option value="beverages">🥤 Beverages</option>
+                      <option value="other">🍱 Other</option>
                     </select>
-                    <select className="filter-select" value={storageFilter} onChange={e => setStorageFilter(e.target.value)}>
+                    <select
+                      className="filter-select"
+                      value={storageFilter}
+                      onChange={e => setStorageFilter(e.target.value)}
+                    >
                       <option value="all">All Storage</option>
                       <option value="room">🌡 Room Temp</option>
                       <option value="refrigerated">❄ Refrigerated</option>
                     </select>
-                    <select className="filter-select" value={freshnessFilter} onChange={e => setFreshnessFilter(Number(e.target.value))}>
+                    <select
+                      className="filter-select"
+                      value={freshnessFilter}
+                      onChange={e => setFreshnessFilter(Number(e.target.value))}
+                    >
                       <option value={0}>Any Freshness</option>
                       <option value={70}>70%+ Fresh</option>
                       <option value={50}>50%+ Fresh</option>
@@ -387,19 +449,36 @@ function NGODashboard() {
                   </div>
                 </div>
 
-                {/* Map */}
+                {/* Map — FIX 2: center derived from real data, FIX 3: ChangeView uses useEffect */}
                 <div className="map-shell">
-                  <MapContainer center={mapCenter} zoom={13} style={{ height: "100%", width: "100%" }}>
+                  <MapContainer
+                    center={mapCenter}
+                    zoom={13}
+                    style={{ height: "100%", width: "100%" }}
+                  >
                     <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                     <ChangeView center={mapCenter} />
                     {filteredNearbyFood.map(item =>
                       item.location?.coordinates && (
-                        <Marker key={item._id} position={[item.location.coordinates[1], item.location.coordinates[0]]}>
+                        <Marker
+                          key={item._id}
+                          position={[
+                            item.location.coordinates[1],
+                            item.location.coordinates[0],
+                          ]}
+                        >
                           <Popup>
                             <strong>{item.foodType}</strong><br />
                             🏪 {item.restaurant?.name}<br />
                             🌿 {item.freshnessScore}% Fresh<br />
-                            <button onClick={() => reserveFood(item._id)} style={{ marginTop: 8, cursor: "pointer" }}>Reserve</button>
+                            📦 {item.quantity} units<br />
+                            <button
+                              onClick={() => reserveFood(item._id)}
+                              disabled={actionLoading[item._id]}
+                              style={{ marginTop: 8, cursor: "pointer", width: "100%" }}
+                            >
+                              {actionLoading[item._id] ? "Reserving…" : "Reserve"}
+                            </button>
                           </Popup>
                         </Marker>
                       )
@@ -494,7 +573,11 @@ function NGODashboard() {
                   : (
                     <div className="history-list">
                       {myFood.delivered.map((item, i) => (
-                        <div key={item._id} className="history-row" style={{ animationDelay: `${i * 0.04}s` }}>
+                        <div
+                          key={item._id}
+                          className="history-row"
+                          style={{ animationDelay: `${i * 0.04}s` }}
+                        >
                           <div className="history-check">✓</div>
                           <div className="history-info">
                             <span className="history-type">{item.foodType}</span>
@@ -524,24 +607,23 @@ function FoodCard({ item, now, actionLoading, onReserve, style }) {
   const color = getFreshnessColor(score);
   return (
     <div className="card food-card" style={style}>
-      {item.image && (
-        <div className="card-img-wrap">
-          <img src={item.image} alt={item.foodType} className="card-img" />
-          <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
-        </div>
-      )}
-      {!item.image && (
-        <div className="card-no-img">
-          <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
-        </div>
-      )}
+      {item.image
+        ? (
+          <div className="card-img-wrap">
+            <img src={item.image} alt={item.foodType} className="card-img" />
+            <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
+          </div>
+        ) : (
+          <div className="card-no-img">
+            <ExpiryCountdown predictedExpiry={item.predictedExpiry} now={now} />
+          </div>
+        )
+      }
 
       <div className="card-body">
         <div className="card-title-row">
           <h3 className="card-type">{item.foodType}</h3>
-          <span className="freshness-label" style={{ color }}>
-            {score}%
-          </span>
+          <span className="freshness-label" style={{ color }}>{score}%</span>
         </div>
 
         <div className="freshness-track">
@@ -564,11 +646,10 @@ function FoodCard({ item, now, actionLoading, onReserve, style }) {
           onClick={() => onReserve(item._id)}
           disabled={actionLoading[item._id]}
         >
-          {actionLoading[item._id] ? (
-            <span className="btn-spinner" />
-          ) : (
-            "＋ Reserve Food"
-          )}
+          {actionLoading[item._id]
+            ? <span className="btn-spinner" />
+            : "＋ Reserve Food"
+          }
         </button>
       </div>
     </div>
@@ -627,9 +708,7 @@ const CSS = `
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── ROOT LAYOUT ── */
-  .ngo-root {
-    display: flex; min-height: 100vh;
-  }
+  .ngo-root { display: flex; min-height: 100vh; }
 
   /* ── SIDEBAR ── */
   .sidebar {
@@ -641,14 +720,16 @@ const CSS = `
     position: fixed; top: 0; left: 0; height: 100vh;
     z-index: 100;
   }
-
   .sidebar-brand {
     display: flex; align-items: center; gap: 10px;
     padding: 0 20px 28px;
     border-bottom: 1px solid var(--border);
   }
   .brand-icon { font-size: 22px; }
-  .brand-name { font-family: var(--font-display); font-weight: 800; font-size: 17px; letter-spacing: -.01em; color: var(--accent2); }
+  .brand-name {
+    font-family: var(--font-display); font-weight: 800; font-size: 17px;
+    letter-spacing: -.01em; color: var(--accent2);
+  }
 
   .sidebar-nav { display: flex; flex-direction: column; gap: 4px; padding: 20px 12px; flex: 1; }
 
@@ -663,7 +744,7 @@ const CSS = `
   .nav-item:hover { background: var(--surface2); color: var(--text); }
   .nav-item.active { background: var(--accent); color: #0a120b; font-weight: 600; }
   .nav-item.active .nav-count { background: rgba(0,0,0,.15); color: #0a120b; }
-  .nav-icon { font-size: 16px; flex-shrink: 0; }
+  .nav-icon  { font-size: 16px; flex-shrink: 0; }
   .nav-label { flex: 1; }
   .nav-count {
     font-family: var(--font-mono); font-size: 11px; font-weight: 500;
@@ -671,7 +752,10 @@ const CSS = `
     padding: 2px 7px; border-radius: 20px;
   }
 
-  .sidebar-footer { padding: 16px 12px 0; border-top: 1px solid var(--border); margin-top: auto; }
+  .sidebar-footer {
+    padding: 16px 12px 0; border-top: 1px solid var(--border);
+    margin-top: auto; display: flex; flex-direction: column; gap: 6px;
+  }
   .sidebar-btn {
     width: 100%; padding: 10px 12px; border-radius: 10px;
     border: 1px solid var(--border); background: none;
@@ -679,14 +763,11 @@ const CSS = `
     cursor: pointer; display: flex; align-items: center; gap: 8px;
     transition: .15s;
   }
+  .sidebar-btn:hover { background: var(--surface2); color: var(--text); }
   .sidebar-btn.logout:hover { background: rgba(240,82,82,.12); color: var(--danger); border-color: var(--danger); }
 
   /* ── MAIN AREA ── */
-  .main-area {
-    margin-left: var(--sidebar-w);
-    flex: 1; display: flex; flex-direction: column;
-    min-width: 0;
-  }
+  .main-area { margin-left: var(--sidebar-w); flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
   /* ── TOPBAR ── */
   .topbar {
@@ -712,7 +793,6 @@ const CSS = `
   }
 
   .topbar-actions { display: flex; align-items: center; gap: 10px; }
-
   .action-btn {
     padding: 9px 16px; border-radius: 9px;
     background: var(--surface2); border: 1px solid var(--border);
@@ -720,6 +800,7 @@ const CSS = `
     cursor: pointer; transition: .15s;
   }
   .action-btn:hover { color: var(--text); border-color: var(--muted); }
+  .action-btn:disabled { opacity: .5; cursor: not-allowed; }
   .action-btn.export { background: rgba(95,212,117,.12); color: var(--accent); border-color: rgba(95,212,117,.3); }
   .action-btn.export:hover { background: rgba(95,212,117,.2); }
 
@@ -729,8 +810,7 @@ const CSS = `
     position: relative; width: 40px; height: 40px;
     background: var(--surface2); border: 1px solid var(--border);
     border-radius: 10px; cursor: pointer; font-size: 18px;
-    display: flex; align-items: center; justify-content: center;
-    transition: .15s;
+    display: flex; align-items: center; justify-content: center; transition: .15s;
   }
   .notif-btn:hover { border-color: var(--muted); }
   .notif-badge {
@@ -762,17 +842,15 @@ const CSS = `
     display: flex; flex-direction: column; gap: 3px;
   }
   .notif-item.unread { background: rgba(95,212,117,.05); }
-  .notif-msg { font-size: 13px; color: var(--text); }
+  .notif-msg  { font-size: 13px; color: var(--text); }
   .notif-time { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
   .notif-empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px; font-family: var(--font-mono); }
 
   /* ── FLASH ── */
   .flash {
-    margin: 16px 32px 0;
-    padding: 12px 16px; border-radius: 10px;
+    margin: 16px 32px 0; padding: 12px 16px; border-radius: 10px;
     display: flex; justify-content: space-between; align-items: center;
-    font-size: 14px; font-weight: 500;
-    animation: slideDown .2s ease;
+    font-size: 14px; font-weight: 500; animation: slideDown .2s ease;
   }
   .flash button { background: none; border: none; cursor: pointer; font-size: 18px; opacity: .7; }
   .flash.success { background: rgba(95,212,117,.12); color: var(--accent); border: 1px solid rgba(95,212,117,.25); }
@@ -780,7 +858,6 @@ const CSS = `
 
   /* ── CONTENT ── */
   .content { padding: 28px 32px; flex: 1; }
-
   .tab-panel { animation: fadeUp .2s ease both; }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
@@ -800,11 +877,9 @@ const CSS = `
   .search-icon { color: var(--muted); font-size: 18px; }
   .search-input {
     flex: 1; background: none; border: none; outline: none;
-    color: var(--text); font-family: var(--font-body); font-size: 14px;
-    padding: 11px 0;
+    color: var(--text); font-family: var(--font-body); font-size: 14px; padding: 11px 0;
   }
   .search-input::placeholder { color: var(--muted); }
-
   .filter-selects { display: flex; gap: 8px; flex-wrap: wrap; }
   .filter-select {
     padding: 10px 14px; border-radius: 10px;
@@ -817,8 +892,7 @@ const CSS = `
   /* ── MAP ── */
   .map-shell {
     height: 300px; border-radius: var(--radius);
-    overflow: hidden; border: 1px solid var(--border);
-    margin-bottom: 20px;
+    overflow: hidden; border: 1px solid var(--border); margin-bottom: 20px;
   }
 
   /* ── RESULT META ── */
@@ -841,21 +915,16 @@ const CSS = `
     animation: fadeUp .3s ease both;
     transition: border-color .2s, transform .2s;
   }
-  .card:hover { border-color: var(--border); transform: translateY(-2px); }
+  .card:hover { transform: translateY(-2px); border-color: #3a4438; }
 
   .card-img-wrap { position: relative; }
   .card-img { width: 100%; height: 160px; object-fit: cover; display: block; }
   .card-no-img { padding: 16px 16px 0; display: flex; justify-content: flex-end; }
-
-  /* position expiry over image */
-  .card-img-wrap .expiry-pill {
-    position: absolute; top: 10px; right: 10px;
-  }
+  .card-img-wrap .expiry-pill { position: absolute; top: 10px; right: 10px; }
 
   .card-body { padding: 14px 16px 16px; }
   .card-title-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
   .card-type { font-family: var(--font-display); font-size: 15px; font-weight: 700; color: var(--text); }
-
   .freshness-label { font-family: var(--font-mono); font-size: 13px; font-weight: 500; }
 
   .freshness-track {
@@ -870,13 +939,10 @@ const CSS = `
     font-family: var(--font-mono);
   }
 
-  /* status card (reserved / picked) */
-  .status-card .card-body,
+  /* status cards */
   .status-card { padding: 18px 20px; }
-
   .pending-banner {
-    margin: 10px 0 12px;
-    padding: 10px 14px; border-radius: 9px;
+    margin: 10px 0 12px; padding: 10px 14px; border-radius: 9px;
     background: rgba(240,180,41,.08); color: var(--warn);
     border: 1px solid rgba(240,180,41,.2);
     font-size: 13px; display: flex; align-items: center; gap: 8px;
@@ -917,12 +983,10 @@ const CSS = `
   }
   .expiry-pill.urgent {
     background: rgba(240,82,82,.1); color: var(--danger);
-    border-color: rgba(240,82,82,.3);
-    animation: blink 1s infinite;
+    border-color: rgba(240,82,82,.3); animation: blink 1s infinite;
   }
   .expiry-pill.expired {
-    background: rgba(240,82,82,.1); color: var(--danger);
-    border-color: rgba(240,82,82,.3);
+    background: rgba(240,82,82,.1); color: var(--danger); border-color: rgba(240,82,82,.3);
   }
   @keyframes blink { 50% { opacity: .55; } }
 

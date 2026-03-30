@@ -40,10 +40,10 @@ const initSocket = (server, clientOrigin) => {
     const myRoom = socket.userId.toString();
     
     socket.join(myRoom);
-    console.log(`✅ User authenticated & joined room: ${myRoom}`);
+    console.log(`[socket] User connected: ${myRoom}`);
 
     socket.on("disconnect", () => {
-      console.log(`❌ User disconnected: ${myRoom}`);
+      console.log(`[socket] User disconnected: ${myRoom}`);
     });
   });
 

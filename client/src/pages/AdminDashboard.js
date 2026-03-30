@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import axios from "../api/axios";
 import { useNavigate } from "react-router-dom";
+import ForecastChart from "../components/ForecastChart";
 import {
   AreaChart, Area,
   BarChart, Bar,
@@ -381,7 +382,11 @@ function AdminDashboard() {
                 </div>
               ) : <EmptyChart icon="🏆" text="No delivery data yet" />}
             </div>
-
+              <ForecastChart
+  forecast={analytics.forecast}
+  summary={analytics.forecastSummary}
+  available={analytics.forecastAvailable}
+/>
             {/* ── NGO PERFORMANCE LEADERBOARD ── */}
             <div className="chart-card">
               <div className="chart-header">

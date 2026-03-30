@@ -36,7 +36,7 @@ server/uploads/
 *.pem
 *.key
 *.cert
-# ── IDE / editor ──────────────────────────────
+.sfdx/
 .vscode/
 .idea/
 *.swp

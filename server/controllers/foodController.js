@@ -2,6 +2,9 @@ const Food = require("../models/Food");
 const { getIO } = require("../socket");
 const { sendEmail } = require("../utils/mailer");
 
+// Node 18+ has native fetch — no extra package needed
+const FORECASTER_URL = process.env.FORECASTER_URL || "http://localhost:5001";
+
 /* =====================================
    FRESHNESS CALCULATION
 ===================================== */
@@ -12,12 +15,32 @@ const calculateFreshness = (cookedTime, storageType) => {
   if (isNaN(cooked.getTime())) throw new Error("Invalid cookedTime provided");
   if (cooked > now)            throw new Error("Cooked time cannot be in the future");
 
-  const hoursPassed  = (now - cooked) / (1000 * 60 * 60);
-  const maxHours     = storageType === "refrigerated" ? 12 : 6;
+  const hoursPassed     = (now - cooked) / (1000 * 60 * 60);
+  const maxHours        = storageType === "refrigerated" ? 12 : 6;
   const freshnessScore  = Math.max(0, Math.round(100 - (hoursPassed / maxHours) * 100));
   const predictedExpiry = new Date(cooked.getTime() + maxHours * 60 * 60 * 1000);
 
   return { freshnessScore, predictedExpiry };
+};
+
+/* =====================================
+   FORECAST HELPER
+   Calls the Python Flask microservice.
+   Returns null gracefully if the service
+   is down so analytics still load.
+===================================== */
+const fetchForecast = async () => {
+  try {
+    const res = await fetch(`${FORECASTER_URL}/predict?days=30&horizon=7`, {
+      signal: AbortSignal.timeout(8000), // 8 s timeout — Prophet can be slow on first call
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.ok ? data : null;
+  } catch (err) {
+    console.warn("FORECAST SERVICE UNAVAILABLE:", err.message);
+    return null;
+  }
 };
 
 /* =====================================
@@ -42,12 +65,12 @@ exports.createFood = async (req, res) => {
     const { freshnessScore, predictedExpiry } = calculateFreshness(cookedTime, storageType);
 
     const food = await Food.create({
-      restaurant: req.user._id,
+      restaurant:    req.user._id,
       foodType,
-      quantity:   Number(quantity),
+      quantity:      Number(quantity),
       cookedTime,
       storageType,
-      image:      req.file?.path || "",
+      image:         req.file?.path || "",
       freshnessScore,
       predictedExpiry,
       location: {
@@ -80,11 +103,11 @@ exports.getNearbyFood = async (req, res) => {
     const [longitude, latitude] = req.user.location.coordinates;
 
     const food = await Food.find({
-      status:         "available",
+      status:          "available",
       predictedExpiry: { $gt: new Date() },
       location: {
         $near: {
-          $geometry:   { type: "Point", coordinates: [longitude, latitude] },
+          $geometry:    { type: "Point", coordinates: [longitude, latitude] },
           $maxDistance: 10000,
         },
       },
@@ -99,9 +122,6 @@ exports.getNearbyFood = async (req, res) => {
 
 /* =====================================
    RESERVE FOOD (NGO Action)
-   FIX: email was sent before null-check —
-        moved findOneAndUpdate result guard above sendEmail
-        so we never call food.restaurant.email on null
 ===================================== */
 exports.reserveFood = async (req, res) => {
   try {
@@ -119,12 +139,10 @@ exports.reserveFood = async (req, res) => {
       { new: true }
     ).populate("restaurant", "name email _id");
 
-    // ✅ Guard BEFORE any operations that use food.*
     if (!food) {
       return res.status(400).json({ message: "Food unavailable or expired" });
     }
 
-    // Notify restaurant via socket
     const io = getIO();
     if (io) {
       io.to(food.restaurant._id.toString()).emit("food_reserved", {
@@ -135,7 +153,6 @@ exports.reserveFood = async (req, res) => {
       });
     }
 
-    // Email restaurant — non-fatal: log error but don't crash the request
     sendEmail({
       to:      food.restaurant.email,
       subject: "Food Reserved 📦",
@@ -155,9 +172,6 @@ exports.reserveFood = async (req, res) => {
 
 /* =====================================
    MARK PICKED (Restaurant Confirmation)
-   FIX: populate was missing email field —
-        added email to reservedBy populate so
-        the pickup confirmation email can be sent
 ===================================== */
 exports.markPicked = async (req, res) => {
   try {
@@ -165,13 +179,12 @@ exports.markPicked = async (req, res) => {
       { _id: req.params.id, status: "reserved", restaurant: req.user._id },
       { status: "picked" },
       { new: true }
-    ).populate("reservedBy", "name email _id"); // ✅ added email
+    ).populate("reservedBy", "name email _id");
 
     if (!food) {
       return res.status(404).json({ message: "Unauthorized or food not reserved" });
     }
 
-    // Notify NGO via socket
     const io = getIO();
     if (io) {
       io.to(food.reservedBy._id.toString()).emit("food_picked", {
@@ -182,7 +195,6 @@ exports.markPicked = async (req, res) => {
       });
     }
 
-    // Email NGO — non-fatal
     sendEmail({
       to:      food.reservedBy.email,
       subject: "Pickup Confirmed 🚚",
@@ -202,14 +214,11 @@ exports.markPicked = async (req, res) => {
 
 /* =====================================
    MARK DELIVERED (NGO Completion)
-   FIX: restaurant was only populated with _id —
-        added email to populate so the delivery
-        confirmation email has an address to send to
 ===================================== */
 exports.markDelivered = async (req, res) => {
   try {
     const food = await Food.findById(req.params.id)
-      .populate("restaurant", "name email _id"); // ✅ added email
+      .populate("restaurant", "name email _id");
 
     if (!food) {
       return res.status(404).json({ message: "Food not found" });
@@ -223,7 +232,6 @@ exports.markDelivered = async (req, res) => {
     food.deliveredAt = new Date();
     await food.save();
 
-    // Notify restaurant via socket
     const io = getIO();
     if (io) {
       io.to(food.restaurant._id.toString()).emit("food_delivered", {
@@ -234,7 +242,6 @@ exports.markDelivered = async (req, res) => {
       });
     }
 
-    // Email restaurant — non-fatal
     sendEmail({
       to:      food.restaurant.email,
       subject: "Delivery Completed ✅",
@@ -271,7 +278,9 @@ exports.getNGODashboard = async (req, res) => {
 
 exports.getRestaurantDashboard = async (req, res) => {
   try {
-    const food = await Food.find({ restaurant: req.user._id }).sort({ createdAt: -1 });
+    const food = await Food.find({ restaurant: req.user._id })
+      .populate("reservedBy", "name")   // needed for NGO name in rating modal
+      .sort({ createdAt: -1 });
     res.status(200).json(food);
   } catch (error) {
     console.error("RESTAURANT DASHBOARD ERROR:", error);
@@ -280,11 +289,7 @@ exports.getRestaurantDashboard = async (req, res) => {
 };
 
 /* =====================================
-   ADMIN ANALYTICS
-   FIX: missing KPI fields (totalListings, deliveredCount,
-        activeCount, reservedCount, expiredCount,
-        totalQuantityRedistributed, donationsPerDay) that
-        AdminDashboard.jsx reads — added full aggregation
+   ADMIN ANALYTICS  (now includes AI forecast)
 ===================================== */
 exports.getAdminAnalytics = async (req, res) => {
   try {
@@ -292,6 +297,7 @@ exports.getAdminAnalytics = async (req, res) => {
       return res.status(403).json({ message: "Only admins can access analytics" });
     }
 
+    // Run DB aggregations and forecast call in parallel
     const [
       totalListings,
       deliveredCount,
@@ -302,22 +308,20 @@ exports.getAdminAnalytics = async (req, res) => {
       topRestaurants,
       ngoActivity,
       donationsPerDay,
+      forecastData,       // ← new: AI forecast (null if service is down)
     ] = await Promise.all([
 
-      // Counts
       Food.countDocuments(),
       Food.countDocuments({ status: "delivered" }),
       Food.countDocuments({ status: "available" }),
       Food.countDocuments({ status: "reserved"  }),
       Food.countDocuments({ status: "expired"   }),
 
-      // Total units redistributed
       Food.aggregate([
         { $match: { status: "delivered" } },
         { $group: { _id: null, total: { $sum: "$quantity" } } },
       ]),
 
-      // Top restaurants by delivered quantity
       Food.aggregate([
         { $match: { status: "delivered" } },
         { $group: { _id: "$restaurant", totalDelivered: { $sum: "$quantity" }, donationCount: { $sum: 1 } } },
@@ -332,7 +336,6 @@ exports.getAdminAnalytics = async (req, res) => {
         }},
       ]),
 
-      // Top NGOs by deliveries
       Food.aggregate([
         { $match: { status: "delivered", reservedBy: { $ne: null } } },
         { $group: { _id: "$reservedBy", deliveriesCompleted: { $sum: 1 } } },
@@ -341,12 +344,11 @@ exports.getAdminAnalytics = async (req, res) => {
         { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "ngoInfo" } },
         { $project: {
             _id: 0,
-            ngoName:              { $ifNull: [{ $arrayElemAt: ["$ngoInfo.name", 0] }, "Unknown NGO"] },
-            deliveriesCompleted:  1,
+            ngoName:             { $ifNull: [{ $arrayElemAt: ["$ngoInfo.name", 0] }, "Unknown NGO"] },
+            deliveriesCompleted: 1,
         }},
       ]),
 
-      // Donations per day (last 14 days)
       Food.aggregate([
         { $match: { createdAt: { $gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) } } },
         { $group: {
@@ -357,6 +359,9 @@ exports.getAdminAnalytics = async (req, res) => {
         { $sort: { _id: 1 } },
         { $project: { _id: 0, date: "$_id", donations: 1, quantity: 1 } },
       ]),
+
+      // AI forecast — non-blocking, returns null if Flask is down
+      fetchForecast(),
     ]);
 
     res.status(200).json({
@@ -369,6 +374,11 @@ exports.getAdminAnalytics = async (req, res) => {
       topRestaurants,
       ngoActivity,
       donationsPerDay,
+      // Forecast fields — frontend checks for null and shows
+      // "Forecast unavailable" gracefully if Flask isn't running
+      forecast:         forecastData?.forecast         || null,
+      forecastSummary:  forecastData?.summary          || null,
+      forecastAvailable: forecastData !== null,
     });
 
   } catch (error) {
@@ -430,14 +440,13 @@ exports.updateFood = async (req, res) => {
     if (storageType !== undefined) food.storageType = storageType;
     if (cookedTime  !== undefined) food.cookedTime  = cookedTime;
 
-    // Recalculate freshness whenever cooked time or storage type changes
     if (cookedTime !== undefined || storageType !== undefined) {
       const { freshnessScore, predictedExpiry } = calculateFreshness(
         food.cookedTime,
         food.storageType
       );
-      food.freshnessScore   = freshnessScore;
-      food.predictedExpiry  = predictedExpiry;
+      food.freshnessScore  = freshnessScore;
+      food.predictedExpiry = predictedExpiry;
     }
 
     await food.save();

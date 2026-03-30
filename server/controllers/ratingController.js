@@ -1,16 +1,11 @@
 const mongoose = require("mongoose");
 const Rating   = require("../models/Rating");
 const Food     = require("../models/Food");
-const User     = require("../models/User"); // FIX: moved to top-level — was require()'d
+const User     = require("../models/User"); // moved to top-level — was require()'d
                                              // inside getNGOLeaderboard on every call
 
 /* =====================================
    SUBMIT RATING (Restaurant Only)
-   FIX: req.user.id → req.user._id throughout
-        (authMiddleware attaches the Mongoose doc whose
-         id field is ._id — using .id works via the
-         virtual, but ._id is explicit and consistent
-         with the rest of the codebase)
 ===================================== */
 exports.submitRating = async (req, res) => {
   try {
@@ -39,7 +34,6 @@ exports.submitRating = async (req, res) => {
       return res.status(404).json({ message: "Food listing not found" });
     }
 
-    // FIX: .id virtual vs ._id — use ._id.toString() for explicit comparison
     if (food.restaurant.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: "You can only rate NGOs for your own donations" });
     }
@@ -53,7 +47,7 @@ exports.submitRating = async (req, res) => {
     }
 
     const existing = await Rating.findOne({
-      restaurant: req.user._id,  // FIX: ._id
+      restaurant: req.user._id,
       food:       foodId,
     });
 
@@ -62,7 +56,7 @@ exports.submitRating = async (req, res) => {
     }
 
     const newRating = await Rating.create({
-      restaurant: req.user._id,  // FIX: ._id
+      restaurant: req.user._id,
       ngo:        food.reservedBy._id,
       food:       foodId,
       rating:     parsedRating,
@@ -129,7 +123,7 @@ exports.getMyRatings = async (req, res) => {
       return res.status(403).json({ message: "Only restaurants can access this" });
     }
 
-    const ratings = await Rating.find({ restaurant: req.user._id }) // FIX: ._id
+    const ratings = await Rating.find({ restaurant: req.user._id })
       .populate("ngo",  "name")
       .populate("food", "foodType")
       .sort({ createdAt: -1 });
@@ -148,10 +142,6 @@ exports.getMyRatings = async (req, res) => {
 
 /* =====================================
    DELETE RATING
-   FIX: entire function was missing try/catch —
-        any DB error would crash with an unhandled
-        exception instead of returning a 500
-   FIX: req.user.id → req.user._id
 ===================================== */
 exports.deleteRating = async (req, res) => {
   try {
@@ -161,7 +151,7 @@ exports.deleteRating = async (req, res) => {
       return res.status(404).json({ message: "Rating not found" });
     }
 
-    if (rating.restaurant.toString() !== req.user._id.toString()) { // FIX: ._id
+    if (rating.restaurant.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
@@ -180,18 +170,19 @@ exports.deleteRating = async (req, res) => {
 };
 
 /* =====================================
-   NGO LEADERBOARD (Admin)
-   FIX: NGOs that have deliveries but zero ratings were
-        missing avgRating / totalRatings fields entirely
-        when the leaderboardMap entry was created from
-        deliveryAgg — AdminDashboard reads both fields
-        so they must always be present
-   FIX: avgRating.toFixed(2) would throw if avgRating
-        was 0 (a number, not a Rating aggregate result)
-        — guarded with explicit initialisation
+   NGO LEADERBOARD (Admin Only)
+   FIX: was declared twice — first copy had the admin
+        role check but was never closed, second copy had
+        the actual logic but no role check. Merged into
+        one function with both the role guard and the
+        full aggregation logic.
 ===================================== */
 exports.getNGOLeaderboard = async (req, res) => {
   try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Admins only" });
+    }
+
     const [ratingsAgg, deliveryAgg] = await Promise.all([
 
       Rating.aggregate([
@@ -233,7 +224,7 @@ exports.getNGOLeaderboard = async (req, res) => {
         ngoId:           r._id,
         avgRating:       Number(r.avgRating.toFixed(2)),
         totalRatings:    r.totalRatings,
-        totalDeliveries: 0,   // will be filled by deliveryAgg if present
+        totalDeliveries: 0,   // filled by deliveryAgg if present
         avgResponseTime: 0,
       };
     });
@@ -242,7 +233,7 @@ exports.getNGOLeaderboard = async (req, res) => {
       const id = d._id.toString();
 
       if (!leaderboardMap[id]) {
-        // FIX: NGO has deliveries but no ratings yet — initialise ALL fields
+        // NGO has deliveries but no ratings yet — initialise all fields
         leaderboardMap[id] = {
           ngoId:           d._id,
           avgRating:       0,
@@ -253,7 +244,7 @@ exports.getNGOLeaderboard = async (req, res) => {
       }
 
       leaderboardMap[id].totalDeliveries = d.totalDeliveries;
-      leaderboardMap[id].avgResponseTime = Math.round(d.avgResponseTime / 60000); // ms → minutes
+      leaderboardMap[id].avgResponseTime = Math.round(d.avgResponseTime / 60000); // ms -> minutes
     });
 
     const leaderboard = Object.values(leaderboardMap);

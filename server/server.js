@@ -6,7 +6,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const helmet = require("helmet");
-
+const donationRoutes = require("./routes/donationRoutes");
 const authRoutes = require("./routes/authRoutes");
 
 const foodRoutes = require("./routes/foodRoutes");
@@ -142,7 +142,13 @@ app.get("/health", (req, res) => {
     uptime: process.uptime()
   });
 });
+const io = initSocket(server, allowedOrigins);
 
+// Middleware to make socket accessible in all routes via req.io
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
 
 // =============================
 // ROUTES
@@ -151,7 +157,7 @@ app.get("/health", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/food", foodRoutes);
 app.use("/api/ratings", ratingRoutes);
-
+app.use("/api/donations", donationRoutes);
 
 // =============================
 // ERROR HANDLING
@@ -164,13 +170,7 @@ app.use(errorHandler);
 // =============================
 // SOCKET.IO (AFTER MIDDLEWARE)
 // =============================
-const io = initSocket(server, allowedOrigins);
 
-// Middleware to make socket accessible in all routes via req.io
-app.use((req, res, next) => {
-  req.io = io;
-  next();
-});
 // =============================
 // DATABASE CONNECTION
 // =============================
